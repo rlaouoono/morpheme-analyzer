@@ -106,7 +106,7 @@ def sync_input():
 def main():
     st.set_page_config(layout="wide", page_title="영웅 분석기")
 
-    # CSS (박스 위치 및 여백 조정)
+    # CSS
     st.markdown("""
     <style>
     .stTextArea textarea { font-size: 16px; line-height: 1.6; }
@@ -114,14 +114,14 @@ def main():
     /* 편집기(오른쪽) 스타일 조정 */
     div[data-testid="stColumn"]:last-child > div {
         position: sticky;
-        top: 5rem; /* [수정] 상단 헤더에 가리지 않게 더 아래로 내림 */
+        top: 5rem;
         z-index: 999;
         background-color: white; 
-        padding: 10px; /* [수정] 내부 여백을 줄여서 컴팩트하게 */
+        padding: 10px;
         border-radius: 10px;
         border: 1px solid #f0f0f0;
         box-shadow: 0 4px 6px rgba(0,0,0,0.05);
-        max-height: 80vh; /* [수정] 높이도 살짝 줄임 */
+        max-height: 80vh; 
         overflow-y: auto;
     }
     </style>
@@ -133,12 +133,20 @@ def main():
     if 'analyzed' not in st.session_state: st.session_state.analyzed = False
     if 'selected_keyword' not in st.session_state: st.session_state.selected_keyword = None
 
+    # [DB 로드 로직 개선] 중복된 키워드가 있으면 대체어를 모두 합칩니다.
     sheet = get_db_connection()
     db_dict = {}
     if sheet:
         try:
             db_data = sheet.get_all_records()
-            db_dict = {str(row['target_word']): str(row['replace_word']) for row in db_data}
+            # 기존 로직: 덮어쓰기 -> 변경된 로직: 이어붙이기
+            for row in db_data:
+                t_word = str(row['target_word'])
+                r_word = str(row['replace_word'])
+                if t_word in db_dict:
+                    db_dict[t_word] += f", {r_word}" # 기존 값에 쉼표로 추가
+                else:
+                    db_dict[t_word] = r_word
         except: pass
 
     # --- 레이아웃 ---
@@ -208,8 +216,9 @@ def main():
                     search_key = norm_target if norm_target and norm_target in db_dict else target
                     
                     if search_key in db_dict:
-                        replacements = [w.strip() for w in db_dict[search_key].split(',')]
-                        st.success("추천 대체어:")
+                        # 쉼표로 구분된 모든 대체어를 버튼으로 생성
+                        replacements = [w.strip() for w in db_dict[search_key].split(',') if w.strip()]
+                        st.success(f"등록된 대체어 ({len(replacements)}개):")
                         for rep in replacements:
                             if st.button(f"👉 '{rep}'", key=f"btn_{target}_{rep}", use_container_width=True):
                                 new_text = current_text.replace(target, rep)
@@ -220,15 +229,22 @@ def main():
                     else:
                         st.warning("등록된 대체어가 없습니다.")
 
-                # 2. DB 추가
+                # 2. DB 추가 (개선됨)
                 with tab_add:
-                    st.write(f"**'{search_key}'** 저장")
-                    new_sub = st.text_input("대체어 입력", key=f"new_db_{target}")
+                    st.markdown(f"**'{search_key}'**의 대체어 추가")
+                    # 안내 문구 추가 및 다중 입력 허용
+                    new_sub = st.text_input(
+                        "대체어 입력 (쉼표 , 로 구분하여 여러 개 가능)", 
+                        key=f"new_db_{target}",
+                        placeholder="예: 치료, 치유, 케어"
+                    )
+                    
                     if st.button("💾 저장", key=f"save_{target}", use_container_width=True):
                         if new_sub and sheet:
                             try:
+                                # 시트에 그대로 추가 (읽어올 때 알아서 합쳐짐)
                                 sheet.append_row([search_key, new_sub])
-                                st.success("저장 완료!")
+                                st.success("저장 완료! (바로 반영됩니다)")
                                 st.rerun()
                             except: st.error("저장 실패")
 

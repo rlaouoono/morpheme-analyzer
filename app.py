@@ -4,6 +4,7 @@ import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 import re
 from st_click_detector import click_detector
+import time # 딜레이를 위해 추가
 
 # --- 1. 설정 및 제외 단어 ---
 IGNORE_WORDS = {
@@ -106,23 +107,24 @@ def sync_input():
 def main():
     st.set_page_config(layout="wide", page_title="영웅 분석기")
 
-    # CSS
+    # [수정됨] CSS: 중간(2번째), 오른쪽(3번째) 컬럼 모두 스크롤 따라오게(Sticky) 설정
     st.markdown("""
     <style>
     .stTextArea textarea { font-size: 16px; line-height: 1.6; }
 
-    /* 편집기(오른쪽) 스타일 조정 */
-    div[data-testid="stColumn"]:last-child > div {
+    /* 2번째(중간), 3번째(오른쪽) 컬럼을 Sticky로 만들기 */
+    div[data-testid="stColumn"]:nth-of-type(2) > div,
+    div[data-testid="stColumn"]:nth-of-type(3) > div {
         position: sticky;
-        top: 5rem;
+        top: 4rem; /* 헤더 높이만큼 띄움 */
         z-index: 999;
         background-color: white; 
-        padding: 10px;
+        padding: 15px;
         border-radius: 10px;
         border: 1px solid #f0f0f0;
         box-shadow: 0 4px 6px rgba(0,0,0,0.05);
-        max-height: 80vh; 
-        overflow-y: auto;
+        max-height: 85vh; 
+        overflow-y: auto; /* 내용이 길면 내부 스크롤 */
     }
     </style>
     """, unsafe_allow_html=True)
@@ -133,18 +135,17 @@ def main():
     if 'analyzed' not in st.session_state: st.session_state.analyzed = False
     if 'selected_keyword' not in st.session_state: st.session_state.selected_keyword = None
 
-    # [DB 로드 로직 개선] 중복된 키워드가 있으면 대체어를 모두 합칩니다.
+    # [DB 로드 로직]
     sheet = get_db_connection()
     db_dict = {}
     if sheet:
         try:
             db_data = sheet.get_all_records()
-            # 기존 로직: 덮어쓰기 -> 변경된 로직: 이어붙이기
             for row in db_data:
                 t_word = str(row['target_word'])
                 r_word = str(row['replace_word'])
                 if t_word in db_dict:
-                    db_dict[t_word] += f", {r_word}" # 기존 값에 쉼표로 추가
+                    db_dict[t_word] += f", {r_word}"
                 else:
                     db_dict[t_word] = r_word
         except: pass
@@ -216,7 +217,6 @@ def main():
                     search_key = norm_target if norm_target and norm_target in db_dict else target
                     
                     if search_key in db_dict:
-                        # 쉼표로 구분된 모든 대체어를 버튼으로 생성
                         replacements = [w.strip() for w in db_dict[search_key].split(',') if w.strip()]
                         st.success(f"등록된 대체어 ({len(replacements)}개):")
                         for rep in replacements:
@@ -229,24 +229,31 @@ def main():
                     else:
                         st.warning("등록된 대체어가 없습니다.")
 
-                # 2. DB 추가 (개선됨)
+                # 2. DB 추가 (수정됨: 메시지 중복 해결)
                 with tab_add:
                     st.markdown(f"**'{search_key}'**의 대체어 추가")
-                    # 안내 문구 추가 및 다중 입력 허용
                     new_sub = st.text_input(
                         "대체어 입력 (쉼표 , 로 구분하여 여러 개 가능)", 
                         key=f"new_db_{target}",
                         placeholder="예: 치료, 치유, 케어"
                     )
                     
+                    # [핵심] 메시지가 표시될 공간을 미리 확보 (st.empty)
+                    msg_box = st.empty()
+
                     if st.button("💾 저장", key=f"save_{target}", use_container_width=True):
                         if new_sub and sheet:
                             try:
-                                # 시트에 그대로 추가 (읽어올 때 알아서 합쳐짐)
                                 sheet.append_row([search_key, new_sub])
-                                st.success("저장 완료! (바로 반영됩니다)")
+                                # [핵심] 빈 공간에 성공 메시지 띄우기
+                                msg_box.success("저장 완료! (바로 반영됩니다)")
+                                time.sleep(1) # 사용자가 메시지를 볼 수 있게 1초 대기
                                 st.rerun()
-                            except: st.error("저장 실패")
+                            except: 
+                                # [핵심] 같은 공간에 에러 메시지 덮어쓰기
+                                msg_box.error("저장 실패")
+                        elif not new_sub:
+                            msg_box.warning("대체어를 입력해주세요.")
 
                 # 3. 직접 수정
                 with tab_manual:

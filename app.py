@@ -3,6 +3,8 @@ import pandas as pd
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 import re
+# [핵심] 새로고침 없는 클릭을 위한 라이브러리 임포트
+from st_click_detector import click_detector
 
 # --- 1. 설정 및 제외 단어 ---
 IGNORE_WORDS = {
@@ -58,70 +60,71 @@ def analyze_text_smart(text, db_keys):
             
     return final_counts, target_keywords
 
-# --- 4. 하이라이트 HTML 생성 ---
-def create_highlighted_html(text, keywords):
+# --- 4. 하이라이트 HTML 생성 (클릭 감지기용) ---
+def create_interactive_html(text, keywords):
+    """
+    st-click-detector가 인식할 수 있는 HTML을 생성합니다.
+    <a href='#' id='단어'>단어</a> 형태로 만들면, 클릭 시 id가 반환됩니다.
+    """
+    # CSS 스타일 (노란색 하이라이트 + 마우스 커서)
+    css_style = """
+    <style>
+        .highlight {
+            background-color: #fff5b1;
+            padding: 2px 5px;
+            border-radius: 4px;
+            font-weight: bold;
+            border: 1px solid #fdd835;
+            color: #333;
+            text-decoration: none;
+            margin: 0 2px;
+        }
+        .highlight:hover {
+            background-color: #ffeb3b;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+    </style>
+    """
+    
     if not keywords:
-        return text.replace("\n", "<br>")
+        return css_style + f"<div>{text.replace(chr(10), '<br>')}</div>"
 
     sorted_keywords = sorted(keywords, key=len, reverse=True)
+    
+    # 중복 단어 처리를 위해 고유 ID 생성 로직 대신, 
+    # 단순히 단어 자체를 ID로 사용합니다 (같은 단어는 모두 같은 ID).
+    # 정규식으로 치환
     escaped_keywords = [re.escape(kw) for kw in sorted_keywords]
     pattern = re.compile('|'.join(escaped_keywords))
 
     def replace_func(match):
         word = match.group(0)
-        # 클릭 시 URL 파라미터 전달 (이제 안전함)
-        return f"<a href='?selected_word={word}' target='_self' class='highlight'>{word}</a>"
+        # href='#' id='단어' -> 클릭 시 '단어'가 리턴됨 (새로고침 X)
+        return f"<a href='#' id='{word}' class='highlight'>{word}</a>"
 
     highlighted_text = pattern.sub(replace_func, text)
-    return highlighted_text.replace("\n", "<br>")
+    # 줄바꿈 처리
+    final_html = css_style + f"<div style='line-height:1.8; font-size:16px;'>{highlighted_text.replace(chr(10), '<br>')}</div>"
+    
+    return final_html
 
-# --- 5. 메인 앱 ---
+# --- 5. 데이터 동기화 ---
+def sync_input():
+    if "editor_key" in st.session_state:
+        st.session_state.main_text = st.session_state.editor_key
+
+# --- 6. 메인 앱 ---
 def main():
-    st.set_page_config(layout="wide", page_title="영웅 분석기 v1.0")
+    st.set_page_config(layout="wide", page_title="영웅 분석기 v1.3")
 
-    # CSS 스타일
-    st.markdown("""
-    <style>
-    .stTextArea textarea { font-size: 16px; line-height: 1.6; }
-    
-    a.highlight { 
-        background-color: #fff5b1; 
-        color: #333 !important;
-        padding: 2px 5px; 
-        border-radius: 4px; 
-        font-weight: bold; 
-        border: 1px solid #fdd835;
-        text-decoration: none !important;
-        cursor: pointer;
-        transition: all 0.2s;
-    }
-    a.highlight:hover {
-        background-color: #ffeb3b;
-        transform: scale(1.05);
-    }
-    .preview-box {
-        background-color: white; 
-        padding: 20px; 
-        border-radius: 10px; 
-        border: 1px solid #eee; 
-        line-height: 1.8; 
-        height: 500px;
-        overflow-y: auto;
-    }
-    </style>
-    """, unsafe_allow_html=True)
+    st.title("영웅 분석기 v1.3")
 
-    st.title("영웅 분석기")
-
-    # [중요] 세션 초기화: 'main_text' 키가 없으면 빈 문자열로 만듭니다.
-    # 이 'main_text' 키가 입력창과 영혼의 단짝이 됩니다.
-    if 'main_text' not in st.session_state:
-        st.session_state['main_text'] = ""
-    
+    # 세션 초기화
+    if 'main_text' not in st.session_state: st.session_state['main_text'] = ""
     if 'analyzed' not in st.session_state: st.session_state.analyzed = False
     if 'selected_keyword' not in st.session_state: st.session_state.selected_keyword = None
 
-    # [DB 연결]
+    # DB 연결
     sheet = get_db_connection()
     db_dict = {}
     if sheet:
@@ -130,44 +133,46 @@ def main():
             db_dict = {str(row['target_word']): str(row['replace_word']) for row in db_data}
         except: pass
 
-    # [클릭 감지] URL에 단어가 있으면 가져오고 주소창 청소
-    if "selected_word" in st.query_params:
-        st.session_state.selected_keyword = st.query_params["selected_word"]
-        st.session_state.analyzed = True
-        st.query_params.clear()
-
     # --- 레이아웃 ---
     col_left, col_mid, col_right = st.columns([4, 2, 3])
 
     with col_left:
         st.subheader("📝 원고 입력")
         
-        # [핵심 변경점] 
-        # 1. value=... 를 아예 삭제했습니다. (이게 문제의 원흉)
-        # 2. 대신 key="main_text"를 주어 세션 상태와 직접 연결했습니다.
-        # 이제 입력창에 글을 쓰면 st.session_state['main_text']가 자동으로 업데이트되고,
-        # 새로고침이 되어도 st.session_state['main_text']에 있는 값이 다시 입력창에 뜹니다.
+        # [데이터 보존] value 없이 key로만 관리 + on_change 동기화
         st.text_area(
             "글을 입력하세요", 
             height=200, 
-            key="main_text" 
+            key="editor_key",
+            value=st.session_state['main_text'], # 초기값 바인딩
+            on_change=sync_input
         )
         
         if st.button("🔍 분석 시작", type="primary", use_container_width=True):
+            st.session_state.main_text = st.session_state.editor_key
             st.session_state.analyzed = True
-            st.session_state.selected_keyword = None 
+            st.session_state.selected_keyword = None
             st.rerun()
 
         st.divider()
         st.subheader("📄 교정 미리보기")
+        st.caption("노란색 단어를 클릭하면 오른쪽에서 수정할 수 있습니다.")
         
-        # 현재 입력창에 있는(세션에 저장된) 글을 가져옵니다.
         current_text = st.session_state.main_text
 
         if st.session_state.analyzed and current_text:
             counts, targets = analyze_text_smart(current_text, db_dict.keys())
-            final_html = create_highlighted_html(current_text, targets)
-            st.markdown(f"<div class='preview-box'>{final_html}</div>", unsafe_allow_html=True)
+            
+            # [핵심] HTML 생성
+            html_content = create_interactive_html(current_text, targets)
+            
+            # [핵심] 클릭 감지기 (브라우저 새로고침 없이 클릭을 잡아냄)
+            clicked_word = click_detector(html_content)
+            
+            # 클릭된 단어가 있다면 세션에 저장
+            if clicked_word:
+                st.session_state.selected_keyword = clicked_word
+
         else:
             st.info("분석을 시작하면 미리보기가 표시됩니다.")
 
@@ -176,7 +181,6 @@ def main():
         counts, targets = analyze_text_smart(current_text, db_dict.keys())
         sorted_targets = sorted(targets, key=lambda x: counts.get(x, 0), reverse=True)
         
-        # [중간] 반복 횟수
         with col_mid:
             st.subheader("📊 반복 횟수")
             if sorted_targets:
@@ -185,7 +189,6 @@ def main():
             else:
                 st.caption("감지된 키워드가 없습니다.")
 
-        # [오른쪽] 편집기
         with col_right:
             st.subheader("편집기")
             target = st.session_state.selected_keyword
@@ -194,8 +197,7 @@ def main():
                 st.info("👈 왼쪽 미리보기에서 노란색 단어를 클릭하세요.")
             else:
                 st.markdown(f"### 선택됨: **'{target}'**")
-                current_count = counts.get(target, 0)
-                st.write(f"현재 등장 횟수: **{current_count}회**")
+                st.write(f"등장 횟수: **{counts.get(target, 0)}회**")
 
                 st.divider()
                 tab_fix, tab_add, tab_manual = st.tabs(["🔄 대체어 적용", "➕ DB 추가", "✍️ 직접 수정"])
@@ -210,8 +212,11 @@ def main():
                         st.success("등록된 대체어:")
                         for rep in replacements:
                             if st.button(f"👉 '{rep}'(으)로 변경", key=f"btn_{target}_{rep}", use_container_width=True):
-                                # [수정] 세션 변수 직접 업데이트 -> 입력창도 같이 바뀜
-                                st.session_state['main_text'] = current_text.replace(target, rep)
+                                # 텍스트 변경
+                                new_text = current_text.replace(target, rep)
+                                st.session_state.main_text = new_text
+                                # [중요] 변경 후 선택 해제 (그래야 다시 클릭 가능)
+                                st.session_state.selected_keyword = None
                                 st.toast(f"변경 완료: {target} -> {rep}")
                                 st.rerun()
                     else:
@@ -225,7 +230,7 @@ def main():
                         if new_sub and sheet:
                             try:
                                 sheet.append_row([search_key, new_sub])
-                                st.success("저장 완료!")
+                                st.success("저장 완료! (새로고침 후 반영)")
                                 st.rerun()
                             except: st.error("저장 실패")
 
@@ -234,8 +239,8 @@ def main():
                     manual_val = st.text_input("바꿀 단어 입력", key=f"manual_{target}")
                     if st.button("적용하기", key=f"apply_{target}", use_container_width=True, type="primary"):
                         if manual_val:
-                            # [수정] 세션 변수 직접 업데이트
-                            st.session_state['main_text'] = current_text.replace(target, manual_val)
+                            st.session_state.main_text = current_text.replace(target, manual_val)
+                            st.session_state.selected_keyword = None
                             st.toast("수정되었습니다.")
                             st.rerun()
 
@@ -243,8 +248,6 @@ def main():
     st.divider()
     st.subheader("✅ 최종 교정 원고 (자동 저장됨)")
     st.caption("우측 상단의 복사 버튼을 눌러 사용하세요.")
-    
-    # 펼치기 없이 바로 코드 블록 노출 (복사 버튼 포함)
     st.code(st.session_state.main_text, language=None)
 
 if __name__ == "__main__":

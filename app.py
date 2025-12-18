@@ -3,7 +3,6 @@ import pandas as pd
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 import re
-# [핵심] 새로고침 없는 클릭을 위한 라이브러리 임포트
 from st_click_detector import click_detector
 
 # --- 1. 설정 및 제외 단어 ---
@@ -60,13 +59,9 @@ def analyze_text_smart(text, db_keys):
             
     return final_counts, target_keywords
 
-# --- 4. 하이라이트 HTML 생성 (클릭 감지기용) ---
+# --- 4. 하이라이트 HTML 생성 ---
 def create_interactive_html(text, keywords):
-    """
-    st-click-detector가 인식할 수 있는 HTML을 생성합니다.
-    <a href='#' id='단어'>단어</a> 형태로 만들면, 클릭 시 id가 반환됩니다.
-    """
-    # CSS 스타일 (노란색 하이라이트 + 마우스 커서)
+    # CSS 스타일 (노란색 하이라이트)
     css_style = """
     <style>
         .highlight {
@@ -90,20 +85,14 @@ def create_interactive_html(text, keywords):
         return css_style + f"<div>{text.replace(chr(10), '<br>')}</div>"
 
     sorted_keywords = sorted(keywords, key=len, reverse=True)
-    
-    # 중복 단어 처리를 위해 고유 ID 생성 로직 대신, 
-    # 단순히 단어 자체를 ID로 사용합니다 (같은 단어는 모두 같은 ID).
-    # 정규식으로 치환
     escaped_keywords = [re.escape(kw) for kw in sorted_keywords]
     pattern = re.compile('|'.join(escaped_keywords))
 
     def replace_func(match):
         word = match.group(0)
-        # href='#' id='단어' -> 클릭 시 '단어'가 리턴됨 (새로고침 X)
         return f"<a href='#' id='{word}' class='highlight'>{word}</a>"
 
     highlighted_text = pattern.sub(replace_func, text)
-    # 줄바꿈 처리
     final_html = css_style + f"<div style='line-height:1.8; font-size:16px;'>{highlighted_text.replace(chr(10), '<br>')}</div>"
     
     return final_html
@@ -115,9 +104,30 @@ def sync_input():
 
 # --- 6. 메인 앱 ---
 def main():
-    st.set_page_config(layout="wide", page_title="영웅 분석기 v1.3")
+    st.set_page_config(layout="wide", page_title="영웅 분석기")
 
-    st.title("영웅 분석기 v1.3")
+    # CSS 스타일 (여기서 스티키 기능 추가!)
+    st.markdown("""
+    <style>
+    .stTextArea textarea { font-size: 16px; line-height: 1.6; }
+
+    /* [핵심] 오른쪽 컬럼(편집기)을 화면에 고정시키는 CSS */
+    div[data-testid="stColumn"]:last-child > div {
+        position: sticky;
+        top: 2rem; /* 화면 위에서 2rem 떨어진 곳에 고정 */
+        z-index: 1000;
+        background-color: white; /* 투명해서 글자가 겹치는 것 방지 */
+        padding: 15px;
+        border-radius: 10px;
+        border: 1px solid #f0f0f0;
+        box-shadow: 0 4px 6px rgba(0,0,0,0.05);
+        max-height: 90vh; /* 너무 길면 내부 스크롤 생기게 */
+        overflow-y: auto;
+    }
+    </style>
+    """, unsafe_allow_html=True)
+
+    st.title("영웅 분석기")
 
     # 세션 초기화
     if 'main_text' not in st.session_state: st.session_state['main_text'] = ""
@@ -139,12 +149,11 @@ def main():
     with col_left:
         st.subheader("📝 원고 입력")
         
-        # [데이터 보존] value 없이 key로만 관리 + on_change 동기화
         st.text_area(
             "글을 입력하세요", 
             height=200, 
             key="editor_key",
-            value=st.session_state['main_text'], # 초기값 바인딩
+            value=st.session_state['main_text'], 
             on_change=sync_input
         )
         
@@ -163,13 +172,10 @@ def main():
         if st.session_state.analyzed and current_text:
             counts, targets = analyze_text_smart(current_text, db_dict.keys())
             
-            # [핵심] HTML 생성
+            # HTML 생성 및 클릭 감지
             html_content = create_interactive_html(current_text, targets)
-            
-            # [핵심] 클릭 감지기 (브라우저 새로고침 없이 클릭을 잡아냄)
             clicked_word = click_detector(html_content)
             
-            # 클릭된 단어가 있다면 세션에 저장
             if clicked_word:
                 st.session_state.selected_keyword = clicked_word
 
@@ -212,10 +218,8 @@ def main():
                         st.success("등록된 대체어:")
                         for rep in replacements:
                             if st.button(f"👉 '{rep}'(으)로 변경", key=f"btn_{target}_{rep}", use_container_width=True):
-                                # 텍스트 변경
                                 new_text = current_text.replace(target, rep)
                                 st.session_state.main_text = new_text
-                                # [중요] 변경 후 선택 해제 (그래야 다시 클릭 가능)
                                 st.session_state.selected_keyword = None
                                 st.toast(f"변경 완료: {target} -> {rep}")
                                 st.rerun()
@@ -230,7 +234,7 @@ def main():
                         if new_sub and sheet:
                             try:
                                 sheet.append_row([search_key, new_sub])
-                                st.success("저장 완료! (새로고침 후 반영)")
+                                st.success("저장 완료!")
                                 st.rerun()
                             except: st.error("저장 실패")
 

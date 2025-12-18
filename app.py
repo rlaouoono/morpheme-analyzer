@@ -6,7 +6,35 @@ import re
 from st_click_detector import click_detector
 import time
 
-# --- 1. 설정 및 제외 단어 ---
+# --- 1. [핵심] 스크롤 고정 자바스크립트 ---
+# 이 함수가 매번 실행되면서 스크롤 위치를 기억하고 강제로 되돌려 놓습니다.
+def inject_scroll_keeper():
+    js = """
+    <script>
+        // 1. 스크롤 할 때마다 위치를 세션 저장소에 저장 (키: scrollY)
+        window.addEventListener('scroll', function() {
+            sessionStorage.setItem('scrollY', window.scrollY);
+        });
+
+        // 2. 페이지가 로드되거나 Rerun될 때 저장된 위치로 강제 이동
+        function restoreScroll() {
+            var savedPos = sessionStorage.getItem('scrollY');
+            if (savedPos) {
+                window.scrollTo(0, parseInt(savedPos));
+            }
+        }
+
+        // 3. [중요] Streamlit 렌더링 시간차를 극복하기 위해 
+        //    0.1초, 0.2초, 0.5초 뒤에 반복해서 스크롤을 제자리로 돌려놓음
+        restoreScroll();
+        setTimeout(restoreScroll, 100);
+        setTimeout(restoreScroll, 200);
+        setTimeout(restoreScroll, 500);
+    </script>
+    """
+    st.components.v1.html(js, height=0, width=0)
+
+# --- 2. 설정 및 제외 단어 ---
 IGNORE_WORDS = {
     '있다', '있습니다', '있어요', '있는', '하는', '합니다', '하고', '됩니다', 
     '것입니다', '매우', '정말', '사실', '그래서', '그러나', '그런데', '그리고',
@@ -15,7 +43,7 @@ IGNORE_WORDS = {
 }
 JOSA_PATTERNS = r'(은|는|이|가|을|를|의|에|로|으로|에게|께|에서|와|과|한|하다|해요|된|지|도|만|서)$'
 
-# --- 2. 구글 시트(DB) 연결 ---
+# --- 3. 구글 시트(DB) 연결 ---
 def get_db_connection():
     try:
         scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
@@ -29,7 +57,7 @@ def get_db_connection():
     except Exception as e:
         return None
 
-# --- 3. 정밀 분석 로직 ---
+# --- 4. 정밀 분석 로직 ---
 def normalize_word(word):
     word_clean = re.sub(r'[^\w\s]', '', word)
     if word_clean in IGNORE_WORDS: return None
@@ -58,24 +86,16 @@ def analyze_text_smart(text, db_keys):
             target_keywords.append(kw)
     return final_counts, target_keywords
 
-# --- [NEW] N번째 단어만 교체하는 함수 ---
+# --- [유지] N번째 단어만 교체하는 함수 ---
 def replace_nth_occurrence(text, target_word, replace_word, n):
-    """
-    text에서 target_word가 등장하는 n번째(0부터 시작) 위치를 찾아
-    replace_word로 바꾼 문자열을 반환합니다.
-    """
-    # 1. 모든 등장 위치 찾기
     indices = [m.start() for m in re.finditer(re.escape(target_word), text)]
-    
-    # 2. 해당 순번(n)이 존재하면 교체
     if n < len(indices):
         start_idx = indices[n]
         end_idx = start_idx + len(target_word)
         return text[:start_idx] + replace_word + text[end_idx:]
-    
-    return text # 없으면 원본 반환
+    return text
 
-# --- 4. 하이라이트 HTML 생성 (ID에 순번 추가) ---
+# --- 5. 하이라이트 HTML 생성 (ID에 순번 추가) ---
 def create_interactive_html(text, keywords):
     css_style = """
     <style>
@@ -104,62 +124,36 @@ def create_interactive_html(text, keywords):
     escaped_keywords = [re.escape(kw) for kw in sorted_keywords]
     pattern = re.compile('|'.join(escaped_keywords))
 
-    # [핵심] 단어별 등장 횟수를 카운트하여 고유 ID 부여 (예: 치료__0, 치료__1)
     word_counter = {} 
 
     def replace_func(match):
         word = match.group(0)
-        # 카운트 증가
         current_count = word_counter.get(word, 0)
         word_counter[word] = current_count + 1
         
-        # ID에 순번정보 포함 (구분자: __)
+        # ID: 단어__순번
         unique_id = f"{word}__{current_count}"
         return f"<a href='javascript:void(0)' id='{unique_id}' class='highlight'>{word}</a>"
 
     highlighted_text = pattern.sub(replace_func, text)
     final_html = css_style + f"<div style='line-height:1.8; font-size:16px;'>{highlighted_text.replace(chr(10), '<br>')}</div>"
-    
     return final_html
 
-# --- 5. 데이터 동기화 ---
+# --- 6. 데이터 동기화 ---
 def sync_input():
     if "editor_key" in st.session_state:
         st.session_state.main_text = st.session_state.editor_key
 
-# --- [NEW] 스크롤 위치 고정 JS ---
-def inject_scroll_script():
-    # 자바스크립트를 이용해 세션 스토리지에 스크롤 위치 저장/복원
-    js = """
-    <script>
-        // 페이지 로드 시 저장된 스크롤 위치로 이동
-        var scrollPosition = sessionStorage.getItem("scrollPosition");
-        if (scrollPosition) {
-            window.scrollTo(0, parseInt(scrollPosition));
-            sessionStorage.removeItem("scrollPosition");
-        }
-
-        // 버튼 클릭 등 이벤트 발생 시 현재 스크롤 저장
-        window.addEventListener("beforeunload", function() {
-            sessionStorage.setItem("scrollPosition", window.scrollY);
-        });
-    </script>
-    """
-    st.components.v1.html(js, height=0, width=0)
-
-# --- 6. 메인 앱 ---
+# --- 7. 메인 앱 ---
 def main():
     st.set_page_config(layout="wide", page_title="영웅 분석기")
     
-    # 스크롤 고정 스크립트 실행
-    inject_scroll_script()
-
-    # CSS
+    # CSS: 패널 Sticky 설정
     st.markdown("""
     <style>
     .stTextArea textarea { font-size: 16px; line-height: 1.6; }
-
-    /* 중간, 오른쪽 컬럼 Sticky 설정 */
+    
+    /* 패널 고정 */
     div[data-testid="stColumn"]:nth-of-type(2) > div,
     div[data-testid="stColumn"]:nth-of-type(3) > div {
         position: sticky;
@@ -178,6 +172,7 @@ def main():
 
     st.title("영웅 분석기")
 
+    # 세션 초기화
     if 'main_text' not in st.session_state: st.session_state['main_text'] = ""
     if 'analyzed' not in st.session_state: st.session_state.analyzed = False
     if 'selected_keyword_id' not in st.session_state: st.session_state.selected_keyword_id = None
@@ -218,7 +213,7 @@ def main():
 
         st.divider()
         st.subheader("📄 교정 미리보기")
-        st.caption("노란색 단어를 클릭하면 해당 위치의 단어만 수정합니다.")
+        st.caption("클릭한 위치의 단어만 수정됩니다.")
         
         current_text = st.session_state.main_text
 
@@ -226,7 +221,7 @@ def main():
             counts, targets = analyze_text_smart(current_text, db_dict.keys())
             html_content = create_interactive_html(current_text, targets)
             
-            # 클릭 감지 (ID가 반환됨, 예: "치료__1")
+            # 클릭 시 스크롤 위치 보존을 위해 클릭 처리 후 rerun 될 때 JS 실행됨
             clicked_id = click_detector(html_content)
             
             if clicked_id:
@@ -249,7 +244,6 @@ def main():
 
         with col_right:
             st.subheader("편집기")
-            # 선택된 ID (예: 치료__0) 파싱
             sel_id = st.session_state.selected_keyword_id
             
             target_word = None
@@ -257,12 +251,11 @@ def main():
 
             if sel_id:
                 try:
-                    # ID 분리: "단어__순번"
                     parts = sel_id.split("__")
                     target_word = parts[0]
                     target_idx = int(parts[1])
                 except:
-                    target_word = sel_id # 예외 처리
+                    target_word = sel_id
 
             if not target_word:
                 st.info("👈 왼쪽 미리보기에서 단어를 클릭하세요.")
@@ -282,14 +275,12 @@ def main():
                         replacements = [w.strip() for w in db_dict[search_key].split(',') if w.strip()]
                         st.success(f"추천 대체어:")
                         for rep in replacements:
-                            # 버튼 키에 idx를 포함해 고유하게 만듦
                             if st.button(f"👉 '{rep}'로 변경", key=f"btn_{sel_id}_{rep}", use_container_width=True):
-                                # [핵심] n번째 단어만 교체하는 함수 호출
+                                # N번째 단어만 교체
                                 new_text = replace_nth_occurrence(current_text, target_word, rep, target_idx)
-                                
                                 st.session_state.main_text = new_text
-                                st.session_state.selected_keyword_id = None # 선택 해제
-                                st.toast(f"'{target_word}' -> '{rep}' 변경 완료")
+                                st.session_state.selected_keyword_id = None 
+                                st.toast(f"변경 완료: '{target_word}' -> '{rep}'")
                                 st.rerun()
                     else:
                         st.warning("등록된 대체어가 없습니다.")
@@ -315,18 +306,19 @@ def main():
                     manual_val = st.text_input("직접 입력", key=f"manual_{sel_id}")
                     if st.button("적용", key=f"apply_{sel_id}", use_container_width=True, type="primary"):
                         if manual_val:
-                            # [핵심] n번째 단어만 교체
                             new_text = replace_nth_occurrence(current_text, target_word, manual_val, target_idx)
-                            
                             st.session_state.main_text = new_text
                             st.session_state.selected_keyword_id = None
                             st.toast("수정되었습니다.")
                             st.rerun()
 
-    # [하단] 최종 결과
+    # [하단] 최종 원고
     st.divider()
     st.subheader("✅ 최종 결과")
     st.code(st.session_state.main_text, language=None)
+    
+    # [핵심] 모든 렌더링이 끝난 마지막 시점에 스크롤 복구 스크립트 실행
+    inject_scroll_keeper()
 
 if __name__ == "__main__":
     main()

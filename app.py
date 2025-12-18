@@ -237,20 +237,22 @@ def main():
     # --- 2. 가운데: 반복 횟수 (필터 기능 추가) ---
     with col_mid:
         st.subheader("📊 반복 횟수")
-        if st.session_state.analyzed and sorted_targets := sorted(targets, key=lambda x: counts.get(x, 0), reverse=True):
+        
+        # [수정됨] := 연산자 부분을 괄호 ( ) 로 감쌌습니다.
+        if st.session_state.analyzed and (sorted_targets := sorted(targets, key=lambda x: counts.get(x, 0), reverse=True)):
             df = pd.DataFrame([(k, counts[k]) for k in sorted_targets], columns=['키워드', '횟수'])
             
-            # [핵심] DataFrame 선택 기능 활성화 (행 클릭 시 필터링)
+            # DataFrame 선택 기능 활성화
             event = st.dataframe(
                 df, 
                 hide_index=True, 
                 use_container_width=True, 
                 height=500,
-                on_select="rerun", # 클릭 시 리런
+                on_select="rerun", 
                 selection_mode="single-row"
             )
             
-            # 선택된 행이 있으면 필터 키워드 업데이트
+            # 선택 로직
             if event.selection.rows:
                 selected_idx = event.selection.rows[0]
                 selected_word = df.iloc[selected_idx]['키워드']
@@ -258,7 +260,6 @@ def main():
                     st.session_state.filter_keyword = selected_word
                     st.rerun()
             else:
-                # 선택 해제 시 필터 초기화
                 if st.session_state.filter_keyword is not None:
                     st.session_state.filter_keyword = None
                     st.rerun()
@@ -318,3 +319,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+

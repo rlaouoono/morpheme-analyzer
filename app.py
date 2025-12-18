@@ -58,7 +58,7 @@ def analyze_text_smart(text, db_keys):
             
     return final_counts, target_keywords
 
-# --- 4. 하이라이트 HTML 생성 ---
+# --- 4. 하이라이트 HTML 생성 (클릭 기능 제거 - 안전성 확보) ---
 def create_highlighted_html(text, keywords):
     if not keywords:
         return text.replace("\n", "<br>")
@@ -69,16 +69,15 @@ def create_highlighted_html(text, keywords):
 
     def replace_func(match):
         word = match.group(0)
-        return f"<a href='?selected_word={word}' target='_self' class='highlight'>{word}</a>"
+        # 링크(a 태그) 대신 단순 span 태그로 변경 -> 클릭해도 새로고침 안됨
+        return f"<span class='highlight'>{word}</span>"
 
     highlighted_text = pattern.sub(replace_func, text)
     return highlighted_text.replace("\n", "<br>")
 
-# --- 5. [핵심] 입력 데이터 강제 동기화 함수 ---
-def sync_text():
-    """입력창에 무언가 입력될 때마다 즉시 세션 저장소에 복사"""
-    if "editor_widget" in st.session_state:
-        st.session_state.main_text = st.session_state.editor_widget
+# --- 5. 데이터 동기화 함수 ---
+def sync_input():
+    st.session_state.main_text = st.session_state.editor_key
 
 # --- 6. 메인 앱 ---
 def main():
@@ -89,20 +88,13 @@ def main():
     <style>
     .stTextArea textarea { font-size: 16px; line-height: 1.6; }
     
-    a.highlight { 
+    .highlight { 
         background-color: #fff5b1; 
-        color: #333 !important;
-        padding: 2px 5px; 
+        padding: 2px 4px; 
         border-radius: 4px; 
         font-weight: bold; 
         border: 1px solid #fdd835;
-        text-decoration: none !important;
-        cursor: pointer;
-        transition: all 0.2s;
-    }
-    a.highlight:hover {
-        background-color: #ffeb3b;
-        transform: scale(1.05);
+        color: #333;
     }
     .preview-box {
         background-color: white; 
@@ -116,12 +108,11 @@ def main():
     </style>
     """, unsafe_allow_html=True)
 
-    st.title("영웅 분석기 v1.4")
+    st.title("영웅 분석기")
 
-    # [세션 초기화] 데이터의 '본체'를 만듭니다.
+    # 세션 초기화
     if 'main_text' not in st.session_state: st.session_state.main_text = ""
     if 'analyzed' not in st.session_state: st.session_state.analyzed = False
-    if 'selected_keyword' not in st.session_state: st.session_state.selected_keyword = None
 
     # DB 연결
     sheet = get_db_connection()
@@ -132,77 +123,83 @@ def main():
             db_dict = {str(row['target_word']): str(row['replace_word']) for row in db_data}
         except: pass
 
-    # https://blog.naver.com/eyeclon/223835669612
-    if "selected_word" in st.query_params:
-        st.session_state.selected_keyword = st.query_params["selected_word"]
-        st.session_state.analyzed = True
-        # 여기서 clear()를 하지 않습니다. (화면 깜빡임 최소화)
-    
     # --- 레이아웃 ---
     col_left, col_mid, col_right = st.columns([4, 2, 3])
 
+    # [왼쪽] 원고 입력 & 미리보기
     with col_left:
         st.subheader("📝 원고 입력")
         
-        # [핵심 해결책]
-        # 1. value에 세션값(main_text)을 넣어서, 항상 저장된 값을 보여주게 합니다.
-        # 2. on_change에 동기화 함수를 넣어서, 타이핑할 때마다 값을 저장합니다.
-        # 3. key를 따로 줘서 위젯과 데이터를 연결합니다.
+        # 입력창: 값이 바뀔 때마다 session_state.main_text에 저장 (on_change)
         st.text_area(
             "글을 입력하세요", 
-            value=st.session_state.main_text, 
-            height=150, 
-            key="editor_widget",
-            on_change=sync_text
+            value=st.session_state.main_text,
+            height=200, 
+            key="editor_key",
+            on_change=sync_input
         )
         
-        # 분석 버튼
         if st.button("🔍 분석 시작", type="primary", use_container_width=True):
-            # 버튼 누르는 순간, 현재 위젯의 값을 확실하게 저장
-            st.session_state.main_text = st.session_state.editor_widget
+            st.session_state.main_text = st.session_state.editor_key # 강제 저장
             st.session_state.analyzed = True
-            st.session_state.selected_keyword = None 
             st.rerun()
 
         st.divider()
         st.subheader("📄 교정 미리보기")
-        st.caption("노란색 단어를 클릭하면 오른쪽에서 수정할 수 있습니다.")
         
-        # 항상 'main_text'를 기준으로 화면을 그림 (증발 방지)
-        current_content = st.session_state.main_text
+        # 현재 저장된 텍스트 사용
+        current_text = st.session_state.main_text
 
-        if st.session_state.analyzed and current_content:
-            counts, targets = analyze_text_smart(current_content, db_dict.keys())
-            final_html = create_highlighted_html(current_content, targets)
+        if st.session_state.analyzed and current_text:
+            counts, targets = analyze_text_smart(current_text, db_dict.keys())
+            final_html = create_highlighted_html(current_text, targets)
             st.markdown(f"<div class='preview-box'>{final_html}</div>", unsafe_allow_html=True)
         else:
             st.info("분석을 시작하면 미리보기가 표시됩니다.")
 
-    # 중간 & 오른쪽 패널
-    if st.session_state.analyzed and st.session_state.main_text:
-        # 데이터는 항상 세션 저장소(main_text)에서 가져옴
-        content_for_analysis = st.session_state.main_text
-        counts, targets = analyze_text_smart(content_for_analysis, db_dict.keys())
+    # [중간 & 오른쪽] 로직
+    selected_word_from_table = None
+
+    if st.session_state.analyzed and current_text:
+        counts, targets = analyze_text_smart(current_text, db_dict.keys())
         sorted_targets = sorted(targets, key=lambda x: counts.get(x, 0), reverse=True)
         
+        # [중간] 클릭 가능한 데이터프레임 (여기가 핵심!)
         with col_mid:
-            st.subheader("📊 반복 횟수")
+            st.subheader("📊 반복 횟수 (클릭)")
+            st.caption("아래 표에서 단어를 선택하세요.")
+            
             if sorted_targets:
                 df = pd.DataFrame([(k, counts[k]) for k in sorted_targets], columns=['키워드', '횟수'])
-                st.dataframe(df, hide_index=True, use_container_width=True, height=500)
+                
+                # Streamlit의 선택 기능 사용 (새로고침 없이 안전하게 선택 가능)
+                event = st.dataframe(
+                    df,
+                    hide_index=True,
+                    use_container_width=True,
+                    height=500,
+                    selection_mode="single-row", # 한 줄만 선택 가능
+                    on_select="rerun" # 선택 시 리런 (이건 데이터가 저장된 후라 안전함)
+                )
+                
+                # 선택된 행이 있는지 확인
+                if len(event.selection.rows) > 0:
+                    idx = event.selection.rows[0]
+                    selected_word_from_table = df.iloc[idx]['키워드']
             else:
                 st.caption("감지된 키워드가 없습니다.")
 
+        # [오른쪽] 편집기
         with col_right:
             st.subheader("편집기")
-            target = st.session_state.selected_keyword
+            
+            target = selected_word_from_table
             
             if not target:
-                st.info("👈 왼쪽 미리보기에서 노란색 단어를 클릭하세요.")
+                st.info("👈 중간의 '반복 횟수' 표에서 단어를 클릭하세요.")
             else:
                 st.markdown(f"### 선택됨: **'{target}'**")
-                current_count = counts.get(target, 0)
-                st.write(f"현재 등장 횟수: **{current_count}회**")
+                st.write(f"등장 횟수: **{counts.get(target, 0)}회**")
 
                 st.divider()
                 tab_fix, tab_add, tab_manual = st.tabs(["🔄 대체어 적용", "➕ DB 추가", "✍️ 직접 수정"])
@@ -214,10 +211,9 @@ def main():
                     
                     if search_key in db_dict:
                         replacements = [w.strip() for w in db_dict[search_key].split(',')]
-                        st.success("등록된 대체어가 있습니다!")
+                        st.success("등록된 대체어:")
                         for rep in replacements:
                             if st.button(f"👉 '{rep}'(으)로 변경", key=f"btn_{target}_{rep}", use_container_width=True):
-                                # 수정 시에도 세션 저장소(main_text)를 직접 업데이트
                                 st.session_state.main_text = st.session_state.main_text.replace(target, rep)
                                 st.toast(f"변경 완료: {target} -> {rep}")
                                 st.rerun()
@@ -227,7 +223,7 @@ def main():
                 # 2. DB 추가
                 with tab_add:
                     st.write(f"**'{search_key}'** 저장")
-                    new_sub = st.text_input("대체어 입력 (콤마 구분)", key=f"new_db_{target}")
+                    new_sub = st.text_input("대체어 입력", key=f"new_db_{target}")
                     if st.button("💾 DB 저장", key=f"save_{target}", use_container_width=True):
                         if new_sub and sheet:
                             try:
@@ -241,7 +237,6 @@ def main():
                     manual_val = st.text_input("바꿀 단어 입력", key=f"manual_{target}")
                     if st.button("적용하기", key=f"apply_{target}", use_container_width=True, type="primary"):
                         if manual_val:
-                            # 수정 시에도 세션 저장소(main_text)를 직접 업데이트
                             st.session_state.main_text = st.session_state.main_text.replace(target, manual_val)
                             st.toast("수정되었습니다.")
                             st.rerun()

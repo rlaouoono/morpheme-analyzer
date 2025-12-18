@@ -74,9 +74,15 @@ def create_highlighted_html(text, keywords):
     highlighted_text = pattern.sub(replace_func, text)
     return highlighted_text.replace("\n", "<br>")
 
-# --- 5. 메인 앱 ---
+# --- 5. [핵심] 입력 데이터 강제 동기화 함수 ---
+def sync_text():
+    """입력창에 무언가 입력될 때마다 즉시 세션 저장소에 복사"""
+    if "editor_widget" in st.session_state:
+        st.session_state.main_text = st.session_state.editor_widget
+
+# --- 6. 메인 앱 ---
 def main():
-    st.set_page_config(layout="wide", page_title="영웅 분석기 v1.3")
+    st.set_page_config(layout="wide", page_title="영웅 분석기")
 
     # CSS 스타일
     st.markdown("""
@@ -110,10 +116,10 @@ def main():
     </style>
     """, unsafe_allow_html=True)
 
-    st.title("영웅 분석기")
+    st.title("영웅 분석기 v1.4")
 
-    # [세션 초기화] input_area 키를 직접 관리합니다.
-    if 'input_area' not in st.session_state: st.session_state.input_area = ""
+    # [세션 초기화] 데이터의 '본체'를 만듭니다.
+    if 'main_text' not in st.session_state: st.session_state.main_text = ""
     if 'analyzed' not in st.session_state: st.session_state.analyzed = False
     if 'selected_keyword' not in st.session_state: st.session_state.selected_keyword = None
 
@@ -126,27 +132,34 @@ def main():
             db_dict = {str(row['target_word']): str(row['replace_word']) for row in db_data}
         except: pass
 
-    # https://www.uprtek.com/ko/blogs/what-is-a-spectral-par-meter
+    # https://blog.naver.com/eyeclon/223835669612
     if "selected_word" in st.query_params:
         st.session_state.selected_keyword = st.query_params["selected_word"]
-        st.session_state.analyzed = True # 분석 상태 유지
-        st.query_params.clear()
-
+        st.session_state.analyzed = True
+        # 여기서 clear()를 하지 않습니다. (화면 깜빡임 최소화)
+    
     # --- 레이아웃 ---
     col_left, col_mid, col_right = st.columns([4, 2, 3])
 
     with col_left:
         st.subheader("📝 원고 입력")
         
-        # [핵심 수정] value 파라미터를 제거했습니다. 
-        # 이제 입력창은 'input_area'라는 키를 통해 독립적으로 값을 유지합니다.
+        # [핵심 해결책]
+        # 1. value에 세션값(main_text)을 넣어서, 항상 저장된 값을 보여주게 합니다.
+        # 2. on_change에 동기화 함수를 넣어서, 타이핑할 때마다 값을 저장합니다.
+        # 3. key를 따로 줘서 위젯과 데이터를 연결합니다.
         st.text_area(
             "글을 입력하세요", 
+            value=st.session_state.main_text, 
             height=150, 
-            key="input_area"
+            key="editor_widget",
+            on_change=sync_text
         )
         
+        # 분석 버튼
         if st.button("🔍 분석 시작", type="primary", use_container_width=True):
+            # 버튼 누르는 순간, 현재 위젯의 값을 확실하게 저장
+            st.session_state.main_text = st.session_state.editor_widget
             st.session_state.analyzed = True
             st.session_state.selected_keyword = None 
             st.rerun()
@@ -155,20 +168,21 @@ def main():
         st.subheader("📄 교정 미리보기")
         st.caption("노란색 단어를 클릭하면 오른쪽에서 수정할 수 있습니다.")
         
-        # 현재 입력된 텍스트 가져오기
-        current_text = st.session_state.input_area
+        # 항상 'main_text'를 기준으로 화면을 그림 (증발 방지)
+        current_content = st.session_state.main_text
 
-        if current_text and st.session_state.analyzed:
-            counts, targets = analyze_text_smart(current_text, db_dict.keys())
-            final_html = create_highlighted_html(current_text, targets)
+        if st.session_state.analyzed and current_content:
+            counts, targets = analyze_text_smart(current_content, db_dict.keys())
+            final_html = create_highlighted_html(current_content, targets)
             st.markdown(f"<div class='preview-box'>{final_html}</div>", unsafe_allow_html=True)
         else:
             st.info("분석을 시작하면 미리보기가 표시됩니다.")
 
     # 중간 & 오른쪽 패널
-    current_text = st.session_state.input_area
-    if st.session_state.analyzed and current_text:
-        counts, targets = analyze_text_smart(current_text, db_dict.keys())
+    if st.session_state.analyzed and st.session_state.main_text:
+        # 데이터는 항상 세션 저장소(main_text)에서 가져옴
+        content_for_analysis = st.session_state.main_text
+        counts, targets = analyze_text_smart(content_for_analysis, db_dict.keys())
         sorted_targets = sorted(targets, key=lambda x: counts.get(x, 0), reverse=True)
         
         with col_mid:
@@ -203,8 +217,8 @@ def main():
                         st.success("등록된 대체어가 있습니다!")
                         for rep in replacements:
                             if st.button(f"👉 '{rep}'(으)로 변경", key=f"btn_{target}_{rep}", use_container_width=True):
-                                # [수정] 세션 상태 직접 업데이트
-                                st.session_state.input_area = current_text.replace(target, rep)
+                                # 수정 시에도 세션 저장소(main_text)를 직접 업데이트
+                                st.session_state.main_text = st.session_state.main_text.replace(target, rep)
                                 st.toast(f"변경 완료: {target} -> {rep}")
                                 st.rerun()
                     else:
@@ -227,14 +241,14 @@ def main():
                     manual_val = st.text_input("바꿀 단어 입력", key=f"manual_{target}")
                     if st.button("적용하기", key=f"apply_{target}", use_container_width=True, type="primary"):
                         if manual_val:
-                            # [수정] 세션 상태 직접 업데이트
-                            st.session_state.input_area = current_text.replace(target, manual_val)
+                            # 수정 시에도 세션 저장소(main_text)를 직접 업데이트
+                            st.session_state.main_text = st.session_state.main_text.replace(target, manual_val)
                             st.toast("수정되었습니다.")
                             st.rerun()
 
     st.divider()
     with st.expander("✅ 최종 교정 원고 복사하기"):
-        st.code(st.session_state.input_area, language=None)
+        st.code(st.session_state.main_text, language=None)
 
 if __name__ == "__main__":
     main()

@@ -58,40 +58,32 @@ def analyze_text_smart(text, db_keys):
             
     return final_counts, target_keywords
 
-# --- 4. 하이라이트 HTML 생성 (클릭 기능 부활) ---
+# --- 4. 하이라이트 HTML 생성 ---
 def create_highlighted_html(text, keywords):
     if not keywords:
         return text.replace("\n", "<br>")
 
-    # 긴 단어부터 처리 (태그 꼬임 방지)
     sorted_keywords = sorted(keywords, key=len, reverse=True)
     escaped_keywords = [re.escape(kw) for kw in sorted_keywords]
     pattern = re.compile('|'.join(escaped_keywords))
 
     def replace_func(match):
         word = match.group(0)
-        # 클릭 시 URL 파라미터(?target=단어)를 통해 데이터 전달
-        # target="_self"로 현재 창에서 리로드 (데이터는 세션으로 보호)
+        # 클릭 시 URL 파라미터 전달 (이제 안전함)
         return f"<a href='?selected_word={word}' target='_self' class='highlight'>{word}</a>"
 
     highlighted_text = pattern.sub(replace_func, text)
     return highlighted_text.replace("\n", "<br>")
 
-# --- 5. 데이터 동기화 함수 ---
-def sync_text_area():
-    """입력창(widget)의 값을 메인 데이터(session)에 동기화"""
-    st.session_state.main_text = st.session_state.input_widget
-
-# --- 6. 메인 앱 ---
+# --- 5. 메인 앱 ---
 def main():
-    st.set_page_config(layout="wide", page_title="영웅 분석기")
+    st.set_page_config(layout="wide", page_title="영웅 분석기 v1.0")
 
     # CSS 스타일
     st.markdown("""
     <style>
     .stTextArea textarea { font-size: 16px; line-height: 1.6; }
     
-    /* 클릭 가능한 하이라이트 스타일 */
     a.highlight { 
         background-color: #fff5b1; 
         color: #333 !important;
@@ -121,8 +113,11 @@ def main():
 
     st.title("영웅 분석기")
 
-    # [세션 초기화]
-    if 'main_text' not in st.session_state: st.session_state.main_text = ""
+    # [중요] 세션 초기화: 'main_text' 키가 없으면 빈 문자열로 만듭니다.
+    # 이 'main_text' 키가 입력창과 영혼의 단짝이 됩니다.
+    if 'main_text' not in st.session_state:
+        st.session_state['main_text'] = ""
+    
     if 'analyzed' not in st.session_state: st.session_state.analyzed = False
     if 'selected_keyword' not in st.session_state: st.session_state.selected_keyword = None
 
@@ -135,31 +130,30 @@ def main():
             db_dict = {str(row['target_word']): str(row['replace_word']) for row in db_data}
         except: pass
 
-    # [클릭 이벤트 처리] 
-    # 페이지가 로드될 때 URL에 'selected_word'가 있으면 캐치합니다.
+    # [클릭 감지] URL에 단어가 있으면 가져오고 주소창 청소
     if "selected_word" in st.query_params:
         st.session_state.selected_keyword = st.query_params["selected_word"]
         st.session_state.analyzed = True
-        st.query_params.clear() # 주소창 정리
+        st.query_params.clear()
 
     # --- 레이아웃 ---
     col_left, col_mid, col_right = st.columns([4, 2, 3])
 
-    # [왼쪽] 원고 입력 & 미리보기
     with col_left:
         st.subheader("📝 원고 입력")
         
-        # [핵심] value를 session_state로 고정하여 리로드돼도 글이 남게 함
+        # [핵심 변경점] 
+        # 1. value=... 를 아예 삭제했습니다. (이게 문제의 원흉)
+        # 2. 대신 key="main_text"를 주어 세션 상태와 직접 연결했습니다.
+        # 이제 입력창에 글을 쓰면 st.session_state['main_text']가 자동으로 업데이트되고,
+        # 새로고침이 되어도 st.session_state['main_text']에 있는 값이 다시 입력창에 뜹니다.
         st.text_area(
             "글을 입력하세요", 
-            value=st.session_state.main_text,
-            height=150, 
-            key="input_widget",
-            on_change=sync_text_area # 타이핑할 때마다 저장
+            height=200, 
+            key="main_text" 
         )
         
         if st.button("🔍 분석 시작", type="primary", use_container_width=True):
-            st.session_state.main_text = st.session_state.input_widget # 강제 저장
             st.session_state.analyzed = True
             st.session_state.selected_keyword = None 
             st.rerun()
@@ -167,7 +161,7 @@ def main():
         st.divider()
         st.subheader("📄 교정 미리보기")
         
-        # 저장된 텍스트 사용
+        # 현재 입력창에 있는(세션에 저장된) 글을 가져옵니다.
         current_text = st.session_state.main_text
 
         if st.session_state.analyzed and current_text:
@@ -177,7 +171,7 @@ def main():
         else:
             st.info("분석을 시작하면 미리보기가 표시됩니다.")
 
-    # [중간 & 오른쪽] 로직
+    # 중간 & 오른쪽 패널
     if st.session_state.analyzed and current_text:
         counts, targets = analyze_text_smart(current_text, db_dict.keys())
         sorted_targets = sorted(targets, key=lambda x: counts.get(x, 0), reverse=True)
@@ -200,7 +194,8 @@ def main():
                 st.info("👈 왼쪽 미리보기에서 노란색 단어를 클릭하세요.")
             else:
                 st.markdown(f"### 선택됨: **'{target}'**")
-                st.write(f"등장 횟수: **{counts.get(target, 0)}회**")
+                current_count = counts.get(target, 0)
+                st.write(f"현재 등장 횟수: **{current_count}회**")
 
                 st.divider()
                 tab_fix, tab_add, tab_manual = st.tabs(["🔄 대체어 적용", "➕ DB 추가", "✍️ 직접 수정"])
@@ -215,9 +210,8 @@ def main():
                         st.success("등록된 대체어:")
                         for rep in replacements:
                             if st.button(f"👉 '{rep}'(으)로 변경", key=f"btn_{target}_{rep}", use_container_width=True):
-                                # 텍스트 변경 후 저장 -> 리런
-                                new_text = current_text.replace(target, rep)
-                                st.session_state.main_text = new_text
+                                # [수정] 세션 변수 직접 업데이트 -> 입력창도 같이 바뀜
+                                st.session_state['main_text'] = current_text.replace(target, rep)
                                 st.toast(f"변경 완료: {target} -> {rep}")
                                 st.rerun()
                     else:
@@ -240,16 +234,17 @@ def main():
                     manual_val = st.text_input("바꿀 단어 입력", key=f"manual_{target}")
                     if st.button("적용하기", key=f"apply_{target}", use_container_width=True, type="primary"):
                         if manual_val:
-                            st.session_state.main_text = current_text.replace(target, manual_val)
+                            # [수정] 세션 변수 직접 업데이트
+                            st.session_state['main_text'] = current_text.replace(target, manual_val)
                             st.toast("수정되었습니다.")
                             st.rerun()
 
-    # [하단] 최종 복사 영역 (수정 요청 반영)
+    # [하단] 최종 복사 영역
     st.divider()
     st.subheader("✅ 최종 교정 원고 (자동 저장됨)")
     st.caption("우측 상단의 복사 버튼을 눌러 사용하세요.")
     
-    # 펼치기(Expander) 없이 바로 코드 블록으로 노출하여 복사 버튼 제공
+    # 펼치기 없이 바로 코드 블록 노출 (복사 버튼 포함)
     st.code(st.session_state.main_text, language=None)
 
 if __name__ == "__main__":

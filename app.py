@@ -6,33 +6,36 @@ import re
 from st_click_detector import click_detector
 import time
 
-# --- 1. [강력한 스크롤 고정] iframe 탈출 코드 ---
+# --- 1. [좀비 스크롤 방지] 더 강력하게 고정 ---
 def inject_scroll_keeper():
     js = """
     <script>
-        // 부모 창(실제 브라우저)의 스크롤 위치를 저장하고 복원합니다.
         try {
             var parentWindow = window.parent;
             
-            // 스크롤 할 때마다 위치 저장
+            // 1. 스크롤 할 때마다 위치 저장 (세션 스토리지)
             parentWindow.addEventListener('scroll', function() {
-                parentWindow.sessionStorage.setItem('scrollY', parentWindow.scrollY);
+                parentWindow.sessionStorage.setItem('savedScroll', parentWindow.scrollY);
             });
 
-            // 로드 시 복원 함수
+            // 2. 복구 함수
             function restoreScroll() {
-                var savedPos = parentWindow.sessionStorage.getItem('scrollY');
+                var savedPos = parentWindow.sessionStorage.getItem('savedScroll');
                 if (savedPos) {
                     parentWindow.scrollTo(0, parseInt(savedPos));
                 }
             }
 
-            // 렌더링 타이밍 이슈 극복을 위해 반복 실행
+            // 3. [핵심] 렌더링 타이밍을 맞추기 위해 0.5초 동안 계속 복구 시도
             restoreScroll();
+            setTimeout(restoreScroll, 50);
             setTimeout(restoreScroll, 100);
+            setTimeout(restoreScroll, 200);
             setTimeout(restoreScroll, 300);
+            setTimeout(restoreScroll, 500);
+            
         } catch(e) {
-            console.log("Cross-origin access blocked or other error");
+            console.log("Scroll script error: ", e);
         }
     </script>
     """
@@ -93,20 +96,24 @@ def replace_nth_occurrence(text, target_word, replace_word, n):
         return text[:start_idx] + replace_word + text[end_idx:]
     return text
 
-# --- 3. HTML 생성 (필터링 로직 추가) ---
+# --- 3. HTML 생성 (CSS 수정 가능) ---
 def create_interactive_html(text, keywords, filter_word=None):
-    # 기본 CSS
+    # ▼▼▼ [여기서 노란 박스 크기 조절하세요] ▼▼▼
     css_style = """
     <style>
         .highlight {
-            background-color: #fff5b1; /* 기본 노란색 */
-            padding: 2px 5px; border-radius: 4px; font-weight: bold;
-            border: 1px solid #fdd835; color: #333; text-decoration: none;
-            margin: 0 2px; cursor: pointer;
+            background-color: #fff5b1; /* 배경색 */
+            padding: 2px 5px;          /* [크기조절] 상하 2px, 좌우 5px */
+            border-radius: 4px;        /* 모서리 둥글게 */
+            font-weight: bold;         /* 글자 굵게 */
+            border: 1px solid #fdd835; /* 테두리 */
+            color: #333;               /* 글자색 */
+            text-decoration: none;
+            margin: 0 2px;             /* 글자 사이 간격 */
+            cursor: pointer;
         }
         .highlight:hover { background-color: #ffeb3b; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
         
-        /* 필터링 되었을 때 비활성화된 스타일 */
         .dimmed {
             background-color: transparent;
             padding: 0; border: none; font-weight: normal;
@@ -118,14 +125,12 @@ def create_interactive_html(text, keywords, filter_word=None):
     if not keywords:
         return css_style + f"<div>{text.replace(chr(10), '<br>')}</div>"
 
-    # [핵심] 필터링 단어가 있으면 그것만 남기고 나머지는 제거
     if filter_word:
-        # filter_word와 정확히 일치하는 키워드만 남김
         active_keywords = [k for k in keywords if k == filter_word]
     else:
         active_keywords = keywords
 
-    sorted_keywords = sorted(keywords, key=len, reverse=True) # 매칭을 위해 전체 키워드 패턴 사용
+    sorted_keywords = sorted(keywords, key=len, reverse=True)
     escaped_keywords = [re.escape(kw) for kw in sorted_keywords]
     pattern = re.compile('|'.join(escaped_keywords))
 
@@ -134,7 +139,6 @@ def create_interactive_html(text, keywords, filter_word=None):
     def replace_func(match):
         word = match.group(0)
         
-        # 필터링 모드일 때: active 목록에 없으면 하이라이트 안 함
         if filter_word and word != filter_word:
             return word 
 
@@ -151,7 +155,9 @@ def create_interactive_html(text, keywords, filter_word=None):
 # --- 4. 메인 앱 ---
 def main():
     st.set_page_config(layout="wide", page_title="영웅 분석기")
-    inject_scroll_keeper() # 스크롤 고정 실행
+    
+    # [핵심] 스크롤 고정 스크립트 실행
+    inject_scroll_keeper()
 
     # CSS (패널 고정 및 스타일)
     st.markdown("""
@@ -187,7 +193,7 @@ def main():
 
     col_left, col_mid, col_right = st.columns([5, 2, 2])
 
-    # --- 1. 왼쪽: 원고 입력 & 미리보기 (통합) ---
+    # --- 1. 왼쪽: 원고 입력 & 미리보기 ---
     with col_left:
         with st.expander("📝 원고 입력 / 수정 (펼치기)", expanded=not st.session_state.analyzed):
             st.text_area("글을 입력하세요", key="editor_key", height=150,
@@ -201,48 +207,40 @@ def main():
 
         st.divider()
         
-        # [복사 버튼 위치]
+        # [복사 버튼]
         c1, c2 = st.columns([3, 1])
         with c1: st.subheader("📄 교정 미리보기")
         with c2:
-            # st.code는 내장 복사 버튼을 제공함. 깔끔하게 텍스트만 보여줌.
             if st.session_state.analyzed:
                 with st.popover("📋 원고 복사"):
                     st.code(st.session_state.main_text, language=None)
-                    st.caption("위 박스 우측 상단 아이콘을 눌러 복사하세요.")
+                    st.caption("우측 상단 아이콘 클릭하여 복사")
 
         current_text = st.session_state.main_text
 
         if st.session_state.analyzed and current_text:
-            # 1. 분석 수행
             counts, targets = analyze_text_smart(current_text, db_dict.keys())
             
-            # 2. 필터링 여부 확인 (가운데 표에서 선택한 단어)
             filter_kw = st.session_state.filter_keyword
             if filter_kw:
-                st.info(f"💡 '{filter_kw}' 단어만 확인 중입니다. (해제하려면 가운데 표의 다른 곳을 클릭하거나 새로고침)")
+                st.info(f"💡 '{filter_kw}' 단어만 확인 중입니다. (해제: 표 빈 곳 클릭)")
             else:
                 st.caption("단어를 클릭하여 수정하세요.")
 
-            # 3. HTML 생성 (필터 적용)
             html_content = create_interactive_html(current_text, targets, filter_word=filter_kw)
             
-            # 4. 클릭 감지
             clicked_id = click_detector(html_content)
             if clicked_id:
                 st.session_state.selected_keyword_id = clicked_id
         else:
             st.info("원고를 입력하고 분석을 시작하세요.")
 
-    # --- 2. 가운데: 반복 횟수 (필터 기능 추가) ---
+    # --- 2. 가운데: 반복 횟수 (오류 수정됨) ---
     with col_mid:
         st.subheader("📊 반복 횟수")
-        
-        # [수정됨] := 연산자 부분을 괄호 ( ) 로 감쌌습니다.
         if st.session_state.analyzed and (sorted_targets := sorted(targets, key=lambda x: counts.get(x, 0), reverse=True)):
             df = pd.DataFrame([(k, counts[k]) for k in sorted_targets], columns=['키워드', '횟수'])
             
-            # DataFrame 선택 기능 활성화
             event = st.dataframe(
                 df, 
                 hide_index=True, 
@@ -252,7 +250,6 @@ def main():
                 selection_mode="single-row"
             )
             
-            # 선택 로직
             if event.selection.rows:
                 selected_idx = event.selection.rows[0]
                 selected_word = df.iloc[selected_idx]['키워드']
@@ -266,7 +263,7 @@ def main():
         else:
             st.caption("결과 없음")
 
-    # --- 3. 오른쪽: 편집기 (N번째 수정 기능 유지) ---
+    # --- 3. 오른쪽: 편집기 ---
     with col_right:
         st.subheader("편집기")
         sel_id = st.session_state.selected_keyword_id
@@ -319,4 +316,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

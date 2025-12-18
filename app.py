@@ -4,7 +4,7 @@ import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 import re
 from st_click_detector import click_detector
-import time # 딜레이를 위해 추가
+import time
 
 # --- 1. 설정 및 제외 단어 ---
 IGNORE_WORDS = {
@@ -42,7 +42,6 @@ def normalize_word(word):
 def analyze_text_smart(text, db_keys):
     tokens = text.split()
     counts = {}
-    
     for t in tokens:
         norm = normalize_word(t)
         if norm:
@@ -57,10 +56,26 @@ def analyze_text_smart(text, db_keys):
     for kw, cnt in final_counts.items():
         if cnt >= 2 or kw in db_keys:
             target_keywords.append(kw)
-            
     return final_counts, target_keywords
 
-# --- 4. 하이라이트 HTML 생성 ---
+# --- [NEW] N번째 단어만 교체하는 함수 ---
+def replace_nth_occurrence(text, target_word, replace_word, n):
+    """
+    text에서 target_word가 등장하는 n번째(0부터 시작) 위치를 찾아
+    replace_word로 바꾼 문자열을 반환합니다.
+    """
+    # 1. 모든 등장 위치 찾기
+    indices = [m.start() for m in re.finditer(re.escape(target_word), text)]
+    
+    # 2. 해당 순번(n)이 존재하면 교체
+    if n < len(indices):
+        start_idx = indices[n]
+        end_idx = start_idx + len(target_word)
+        return text[:start_idx] + replace_word + text[end_idx:]
+    
+    return text # 없으면 원본 반환
+
+# --- 4. 하이라이트 HTML 생성 (ID에 순번 추가) ---
 def create_interactive_html(text, keywords):
     css_style = """
     <style>
@@ -89,9 +104,18 @@ def create_interactive_html(text, keywords):
     escaped_keywords = [re.escape(kw) for kw in sorted_keywords]
     pattern = re.compile('|'.join(escaped_keywords))
 
+    # [핵심] 단어별 등장 횟수를 카운트하여 고유 ID 부여 (예: 치료__0, 치료__1)
+    word_counter = {} 
+
     def replace_func(match):
         word = match.group(0)
-        return f"<a href='javascript:void(0)' id='{word}' class='highlight'>{word}</a>"
+        # 카운트 증가
+        current_count = word_counter.get(word, 0)
+        word_counter[word] = current_count + 1
+        
+        # ID에 순번정보 포함 (구분자: __)
+        unique_id = f"{word}__{current_count}"
+        return f"<a href='javascript:void(0)' id='{unique_id}' class='highlight'>{word}</a>"
 
     highlighted_text = pattern.sub(replace_func, text)
     final_html = css_style + f"<div style='line-height:1.8; font-size:16px;'>{highlighted_text.replace(chr(10), '<br>')}</div>"
@@ -103,20 +127,43 @@ def sync_input():
     if "editor_key" in st.session_state:
         st.session_state.main_text = st.session_state.editor_key
 
+# --- [NEW] 스크롤 위치 고정 JS ---
+def inject_scroll_script():
+    # 자바스크립트를 이용해 세션 스토리지에 스크롤 위치 저장/복원
+    js = """
+    <script>
+        // 페이지 로드 시 저장된 스크롤 위치로 이동
+        var scrollPosition = sessionStorage.getItem("scrollPosition");
+        if (scrollPosition) {
+            window.scrollTo(0, parseInt(scrollPosition));
+            sessionStorage.removeItem("scrollPosition");
+        }
+
+        // 버튼 클릭 등 이벤트 발생 시 현재 스크롤 저장
+        window.addEventListener("beforeunload", function() {
+            sessionStorage.setItem("scrollPosition", window.scrollY);
+        });
+    </script>
+    """
+    st.components.v1.html(js, height=0, width=0)
+
 # --- 6. 메인 앱 ---
 def main():
     st.set_page_config(layout="wide", page_title="영웅 분석기")
+    
+    # 스크롤 고정 스크립트 실행
+    inject_scroll_script()
 
-    # [수정됨] CSS: 중간(2번째), 오른쪽(3번째) 컬럼 모두 스크롤 따라오게(Sticky) 설정
+    # CSS
     st.markdown("""
     <style>
     .stTextArea textarea { font-size: 16px; line-height: 1.6; }
 
-    /* 2번째(중간), 3번째(오른쪽) 컬럼을 Sticky로 만들기 */
+    /* 중간, 오른쪽 컬럼 Sticky 설정 */
     div[data-testid="stColumn"]:nth-of-type(2) > div,
     div[data-testid="stColumn"]:nth-of-type(3) > div {
         position: sticky;
-        top: 4rem; /* 헤더 높이만큼 띄움 */
+        top: 4rem; 
         z-index: 999;
         background-color: white; 
         padding: 15px;
@@ -124,7 +171,7 @@ def main():
         border: 1px solid #f0f0f0;
         box-shadow: 0 4px 6px rgba(0,0,0,0.05);
         max-height: 85vh; 
-        overflow-y: auto; /* 내용이 길면 내부 스크롤 */
+        overflow-y: auto;
     }
     </style>
     """, unsafe_allow_html=True)
@@ -133,9 +180,9 @@ def main():
 
     if 'main_text' not in st.session_state: st.session_state['main_text'] = ""
     if 'analyzed' not in st.session_state: st.session_state.analyzed = False
-    if 'selected_keyword' not in st.session_state: st.session_state.selected_keyword = None
+    if 'selected_keyword_id' not in st.session_state: st.session_state.selected_keyword_id = None
 
-    # [DB 로드 로직]
+    # DB 로드
     sheet = get_db_connection()
     db_dict = {}
     if sheet:
@@ -166,22 +213,24 @@ def main():
         if st.button("🔍 분석 시작", type="primary", use_container_width=True):
             st.session_state.main_text = st.session_state.editor_key
             st.session_state.analyzed = True
-            st.session_state.selected_keyword = None
+            st.session_state.selected_keyword_id = None
             st.rerun()
 
         st.divider()
         st.subheader("📄 교정 미리보기")
-        st.caption("노란색 단어를 클릭하면 오른쪽에서 수정할 수 있습니다.")
+        st.caption("노란색 단어를 클릭하면 해당 위치의 단어만 수정합니다.")
         
         current_text = st.session_state.main_text
 
         if st.session_state.analyzed and current_text:
             counts, targets = analyze_text_smart(current_text, db_dict.keys())
             html_content = create_interactive_html(current_text, targets)
-            clicked_word = click_detector(html_content)
             
-            if clicked_word:
-                st.session_state.selected_keyword = clicked_word
+            # 클릭 감지 (ID가 반환됨, 예: "치료__1")
+            clicked_id = click_detector(html_content)
+            
+            if clicked_id:
+                st.session_state.selected_keyword_id = clicked_id
         else:
             st.info("분석을 시작하면 미리보기가 표시됩니다.")
 
@@ -200,74 +249,83 @@ def main():
 
         with col_right:
             st.subheader("편집기")
-            target = st.session_state.selected_keyword
+            # 선택된 ID (예: 치료__0) 파싱
+            sel_id = st.session_state.selected_keyword_id
             
-            if not target:
-                st.info("👈 왼쪽 미리보기에서 노란색 단어를 클릭하세요.")
+            target_word = None
+            target_idx = 0
+
+            if sel_id:
+                try:
+                    # ID 분리: "단어__순번"
+                    parts = sel_id.split("__")
+                    target_word = parts[0]
+                    target_idx = int(parts[1])
+                except:
+                    target_word = sel_id # 예외 처리
+
+            if not target_word:
+                st.info("👈 왼쪽 미리보기에서 단어를 클릭하세요.")
             else:
-                st.markdown(f"### 선택됨: **'{target}'**")
-                st.write(f"등장 횟수: **{counts.get(target, 0)}회**")
+                st.markdown(f"### 선택: **'{target_word}'** ({target_idx + 1}번째)")
+                st.write(f"전체 등장: **{counts.get(target_word, 0)}회**")
 
                 st.divider()
                 tab_fix, tab_add, tab_manual = st.tabs(["🔄 대체어", "➕ DB추가", "✍️ 수정"])
                 
                 # 1. DB 대체어
                 with tab_fix:
-                    norm_target = normalize_word(target)
-                    search_key = norm_target if norm_target and norm_target in db_dict else target
+                    norm_target = normalize_word(target_word)
+                    search_key = norm_target if norm_target and norm_target in db_dict else target_word
                     
                     if search_key in db_dict:
                         replacements = [w.strip() for w in db_dict[search_key].split(',') if w.strip()]
-                        st.success(f"등록된 대체어 ({len(replacements)}개):")
+                        st.success(f"추천 대체어:")
                         for rep in replacements:
-                            if st.button(f"👉 '{rep}'", key=f"btn_{target}_{rep}", use_container_width=True):
-                                new_text = current_text.replace(target, rep)
+                            # 버튼 키에 idx를 포함해 고유하게 만듦
+                            if st.button(f"👉 '{rep}'로 변경", key=f"btn_{sel_id}_{rep}", use_container_width=True):
+                                # [핵심] n번째 단어만 교체하는 함수 호출
+                                new_text = replace_nth_occurrence(current_text, target_word, rep, target_idx)
+                                
                                 st.session_state.main_text = new_text
-                                st.session_state.selected_keyword = None
-                                st.toast(f"변경 완료: {target} -> {rep}")
+                                st.session_state.selected_keyword_id = None # 선택 해제
+                                st.toast(f"'{target_word}' -> '{rep}' 변경 완료")
                                 st.rerun()
                     else:
                         st.warning("등록된 대체어가 없습니다.")
 
-                # 2. DB 추가 (수정됨: 메시지 중복 해결)
+                # 2. DB 추가
                 with tab_add:
-                    st.markdown(f"**'{search_key}'**의 대체어 추가")
-                    new_sub = st.text_input(
-                        "대체어 입력 (쉼표 , 로 구분하여 여러 개 가능)", 
-                        key=f"new_db_{target}",
-                        placeholder="예: 치료, 치유, 케어"
-                    )
-                    
-                    # [핵심] 메시지가 표시될 공간을 미리 확보 (st.empty)
+                    st.markdown(f"**'{search_key}'** DB 추가")
+                    new_sub = st.text_input("대체어 입력", key=f"new_db_{sel_id}")
                     msg_box = st.empty()
 
-                    if st.button("💾 저장", key=f"save_{target}", use_container_width=True):
+                    if st.button("💾 DB 저장", key=f"save_{sel_id}", use_container_width=True):
                         if new_sub and sheet:
                             try:
                                 sheet.append_row([search_key, new_sub])
-                                # [핵심] 빈 공간에 성공 메시지 띄우기
-                                msg_box.success("저장 완료! (바로 반영됩니다)")
-                                time.sleep(1) # 사용자가 메시지를 볼 수 있게 1초 대기
+                                msg_box.success("저장 완료!")
+                                time.sleep(1)
                                 st.rerun()
                             except: 
-                                # [핵심] 같은 공간에 에러 메시지 덮어쓰기
                                 msg_box.error("저장 실패")
-                        elif not new_sub:
-                            msg_box.warning("대체어를 입력해주세요.")
 
                 # 3. 직접 수정
                 with tab_manual:
-                    manual_val = st.text_input("바꿀 단어", key=f"manual_{target}")
-                    if st.button("적용", key=f"apply_{target}", use_container_width=True, type="primary"):
+                    manual_val = st.text_input("직접 입력", key=f"manual_{sel_id}")
+                    if st.button("적용", key=f"apply_{sel_id}", use_container_width=True, type="primary"):
                         if manual_val:
-                            st.session_state.main_text = current_text.replace(target, manual_val)
-                            st.session_state.selected_keyword = None
+                            # [핵심] n번째 단어만 교체
+                            new_text = replace_nth_occurrence(current_text, target_word, manual_val, target_idx)
+                            
+                            st.session_state.main_text = new_text
+                            st.session_state.selected_keyword_id = None
                             st.toast("수정되었습니다.")
                             st.rerun()
 
-    # [하단] 최종 복사 영역
+    # [하단] 최종 결과
     st.divider()
-    st.subheader("✅ 최종 교정 원고 (자동 저장됨)")
+    st.subheader("✅ 최종 결과")
     st.code(st.session_state.main_text, language=None)
 
 if __name__ == "__main__":

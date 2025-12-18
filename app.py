@@ -76,7 +76,7 @@ def create_highlighted_html(text, keywords):
 
 # --- 5. 메인 앱 ---
 def main():
-    st.set_page_config(layout="wide", page_title="영웅 분석기v1.2")
+    st.set_page_config(layout="wide", page_title="영웅 분석기 v1.3")
 
     # CSS 스타일
     st.markdown("""
@@ -112,8 +112,8 @@ def main():
 
     st.title("영웅 분석기")
 
-    # [중요] 세션 상태 초기화
-    if 'main_text' not in st.session_state: st.session_state.main_text = ""
+    # [세션 초기화] input_area 키를 직접 관리합니다.
+    if 'input_area' not in st.session_state: st.session_state.input_area = ""
     if 'analyzed' not in st.session_state: st.session_state.analyzed = False
     if 'selected_keyword' not in st.session_state: st.session_state.selected_keyword = None
 
@@ -126,11 +126,11 @@ def main():
             db_dict = {str(row['target_word']): str(row['replace_word']) for row in db_data}
         except: pass
 
-    # [핵심] URL 파라미터 감지 (클릭 시 실행)
+    # https://www.uprtek.com/ko/blogs/what-is-a-spectral-par-meter
     if "selected_word" in st.query_params:
         st.session_state.selected_keyword = st.query_params["selected_word"]
-        st.session_state.analyzed = True
-        st.query_params.clear() # 주소창 정리
+        st.session_state.analyzed = True # 분석 상태 유지
+        st.query_params.clear()
 
     # --- 레이아웃 ---
     col_left, col_mid, col_right = st.columns([4, 2, 3])
@@ -138,17 +138,15 @@ def main():
     with col_left:
         st.subheader("📝 원고 입력")
         
-        # [수정 포인트] key를 제거하고, 변수로 직접 받음
-        # key가 없으면 Streamlit은 'value' 값을 무조건 신뢰해서 화면에 뿌림 (증발 방지)
-        current_input = st.text_area(
+        # [핵심 수정] value 파라미터를 제거했습니다. 
+        # 이제 입력창은 'input_area'라는 키를 통해 독립적으로 값을 유지합니다.
+        st.text_area(
             "글을 입력하세요", 
-            value=st.session_state.main_text, 
-            height=150
+            height=150, 
+            key="input_area"
         )
         
-        # 분석 버튼 누르면 -> 현재 입력된 값을 세션에 '박제'함
         if st.button("🔍 분석 시작", type="primary", use_container_width=True):
-            st.session_state.main_text = current_input
             st.session_state.analyzed = True
             st.session_state.selected_keyword = None 
             st.rerun()
@@ -157,21 +155,20 @@ def main():
         st.subheader("📄 교정 미리보기")
         st.caption("노란색 단어를 클릭하면 오른쪽에서 수정할 수 있습니다.")
         
-        # 분석된 상태라면 세션에 저장된 텍스트로 미리보기 생성
-        if st.session_state.analyzed:
-            # 혹시 모르니 현재 텍스트 업데이트 (방어 코드)
-            if not st.session_state.main_text and current_input:
-                st.session_state.main_text = current_input
-                
-            counts, targets = analyze_text_smart(st.session_state.main_text, db_dict.keys())
-            final_html = create_highlighted_html(st.session_state.main_text, targets)
+        # 현재 입력된 텍스트 가져오기
+        current_text = st.session_state.input_area
+
+        if current_text and st.session_state.analyzed:
+            counts, targets = analyze_text_smart(current_text, db_dict.keys())
+            final_html = create_highlighted_html(current_text, targets)
             st.markdown(f"<div class='preview-box'>{final_html}</div>", unsafe_allow_html=True)
         else:
             st.info("분석을 시작하면 미리보기가 표시됩니다.")
 
     # 중간 & 오른쪽 패널
-    if st.session_state.analyzed and st.session_state.main_text:
-        counts, targets = analyze_text_smart(st.session_state.main_text, db_dict.keys())
+    current_text = st.session_state.input_area
+    if st.session_state.analyzed and current_text:
+        counts, targets = analyze_text_smart(current_text, db_dict.keys())
         sorted_targets = sorted(targets, key=lambda x: counts.get(x, 0), reverse=True)
         
         with col_mid:
@@ -196,6 +193,7 @@ def main():
                 st.divider()
                 tab_fix, tab_add, tab_manual = st.tabs(["🔄 대체어 적용", "➕ DB 추가", "✍️ 직접 수정"])
                 
+                # 1. DB 대체어 적용
                 with tab_fix:
                     norm_target = normalize_word(target)
                     search_key = norm_target if norm_target and norm_target in db_dict else target
@@ -205,12 +203,14 @@ def main():
                         st.success("등록된 대체어가 있습니다!")
                         for rep in replacements:
                             if st.button(f"👉 '{rep}'(으)로 변경", key=f"btn_{target}_{rep}", use_container_width=True):
-                                st.session_state.main_text = st.session_state.main_text.replace(target, rep)
+                                # [수정] 세션 상태 직접 업데이트
+                                st.session_state.input_area = current_text.replace(target, rep)
                                 st.toast(f"변경 완료: {target} -> {rep}")
                                 st.rerun()
                     else:
                         st.warning("등록된 대체어가 없습니다.")
 
+                # 2. DB 추가
                 with tab_add:
                     st.write(f"**'{search_key}'** 저장")
                     new_sub = st.text_input("대체어 입력 (콤마 구분)", key=f"new_db_{target}")
@@ -222,18 +222,19 @@ def main():
                                 st.rerun()
                             except: st.error("저장 실패")
 
+                # 3. 직접 수정
                 with tab_manual:
                     manual_val = st.text_input("바꿀 단어 입력", key=f"manual_{target}")
                     if st.button("적용하기", key=f"apply_{target}", use_container_width=True, type="primary"):
                         if manual_val:
-                            st.session_state.main_text = st.session_state.main_text.replace(target, manual_val)
+                            # [수정] 세션 상태 직접 업데이트
+                            st.session_state.input_area = current_text.replace(target, manual_val)
                             st.toast("수정되었습니다.")
                             st.rerun()
 
     st.divider()
     with st.expander("✅ 최종 교정 원고 복사하기"):
-        st.code(st.session_state.main_text, language=None)
+        st.code(st.session_state.input_area, language=None)
 
 if __name__ == "__main__":
     main()
-

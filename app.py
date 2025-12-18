@@ -61,7 +61,6 @@ def analyze_text_smart(text, db_keys):
 
 # --- 4. 하이라이트 HTML 생성 ---
 def create_interactive_html(text, keywords):
-    # CSS 스타일
     css_style = """
     <style>
         .highlight {
@@ -91,8 +90,6 @@ def create_interactive_html(text, keywords):
 
     def replace_func(match):
         word = match.group(0)
-        # [핵심 수정] href='#' -> href='javascript:void(0)'
-        # 이렇게 해야 클릭 시 스크롤이 위로 튀지 않습니다.
         return f"<a href='javascript:void(0)' id='{word}' class='highlight'>{word}</a>"
 
     highlighted_text = pattern.sub(replace_func, text)
@@ -109,22 +106,22 @@ def sync_input():
 def main():
     st.set_page_config(layout="wide", page_title="영웅 분석기")
 
-    # CSS (Sticky Sidebar 포함)
+    # CSS (박스 위치 및 여백 조정)
     st.markdown("""
     <style>
     .stTextArea textarea { font-size: 16px; line-height: 1.6; }
 
-    /* 편집기(오른쪽) 스크롤 따라오기 고정 */
+    /* 편집기(오른쪽) 스타일 조정 */
     div[data-testid="stColumn"]:last-child > div {
         position: sticky;
-        top: 2rem; 
-        z-index: 1000;
+        top: 5rem; /* [수정] 상단 헤더에 가리지 않게 더 아래로 내림 */
+        z-index: 999;
         background-color: white; 
-        padding: 15px;
+        padding: 10px; /* [수정] 내부 여백을 줄여서 컴팩트하게 */
         border-radius: 10px;
         border: 1px solid #f0f0f0;
         box-shadow: 0 4px 6px rgba(0,0,0,0.05);
-        max-height: 90vh; 
+        max-height: 80vh; /* [수정] 높이도 살짝 줄임 */
         overflow-y: auto;
     }
     </style>
@@ -144,8 +141,7 @@ def main():
             db_dict = {str(row['target_word']): str(row['replace_word']) for row in db_data}
         except: pass
 
-    # --- 레이아웃 (비율 조정) ---
-    # 기존 [4, 2, 3] -> [5, 2, 2] 로 변경 (편집기를 줄이고 원고를 넓힘)
+    # --- 레이아웃 ---
     col_left, col_mid, col_right = st.columns([5, 2, 2])
 
     with col_left:
@@ -173,13 +169,10 @@ def main():
         if st.session_state.analyzed and current_text:
             counts, targets = analyze_text_smart(current_text, db_dict.keys())
             html_content = create_interactive_html(current_text, targets)
-            
-            # 클릭 감지
             clicked_word = click_detector(html_content)
             
             if clicked_word:
                 st.session_state.selected_keyword = clicked_word
-
         else:
             st.info("분석을 시작하면 미리보기가 표시됩니다.")
 
@@ -209,7 +202,7 @@ def main():
                 st.divider()
                 tab_fix, tab_add, tab_manual = st.tabs(["🔄 대체어", "➕ DB추가", "✍️ 수정"])
                 
-                # 1. DB 대체어 적용
+                # 1. DB 대체어
                 with tab_fix:
                     norm_target = normalize_word(target)
                     search_key = norm_target if norm_target and norm_target in db_dict else target

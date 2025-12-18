@@ -61,7 +61,7 @@ def analyze_text_smart(text, db_keys):
 
 # --- 4. 하이라이트 HTML 생성 ---
 def create_interactive_html(text, keywords):
-    # CSS 스타일 (노란색 하이라이트)
+    # CSS 스타일
     css_style = """
     <style>
         .highlight {
@@ -73,6 +73,7 @@ def create_interactive_html(text, keywords):
             color: #333;
             text-decoration: none;
             margin: 0 2px;
+            cursor: pointer;
         }
         .highlight:hover {
             background-color: #ffeb3b;
@@ -90,7 +91,9 @@ def create_interactive_html(text, keywords):
 
     def replace_func(match):
         word = match.group(0)
-        return f"<a href='#' id='{word}' class='highlight'>{word}</a>"
+        # [핵심 수정] href='#' -> href='javascript:void(0)'
+        # 이렇게 해야 클릭 시 스크롤이 위로 튀지 않습니다.
+        return f"<a href='javascript:void(0)' id='{word}' class='highlight'>{word}</a>"
 
     highlighted_text = pattern.sub(replace_func, text)
     final_html = css_style + f"<div style='line-height:1.8; font-size:16px;'>{highlighted_text.replace(chr(10), '<br>')}</div>"
@@ -106,22 +109,22 @@ def sync_input():
 def main():
     st.set_page_config(layout="wide", page_title="영웅 분석기")
 
-    # CSS 스타일 (여기서 스티키 기능 추가!)
+    # CSS (Sticky Sidebar 포함)
     st.markdown("""
     <style>
     .stTextArea textarea { font-size: 16px; line-height: 1.6; }
 
-    /* [핵심] 오른쪽 컬럼(편집기)을 화면에 고정시키는 CSS */
+    /* 편집기(오른쪽) 스크롤 따라오기 고정 */
     div[data-testid="stColumn"]:last-child > div {
         position: sticky;
-        top: 2rem; /* 화면 위에서 2rem 떨어진 곳에 고정 */
+        top: 2rem; 
         z-index: 1000;
-        background-color: white; /* 투명해서 글자가 겹치는 것 방지 */
+        background-color: white; 
         padding: 15px;
         border-radius: 10px;
         border: 1px solid #f0f0f0;
         box-shadow: 0 4px 6px rgba(0,0,0,0.05);
-        max-height: 90vh; /* 너무 길면 내부 스크롤 생기게 */
+        max-height: 90vh; 
         overflow-y: auto;
     }
     </style>
@@ -129,12 +132,10 @@ def main():
 
     st.title("영웅 분석기")
 
-    # 세션 초기화
     if 'main_text' not in st.session_state: st.session_state['main_text'] = ""
     if 'analyzed' not in st.session_state: st.session_state.analyzed = False
     if 'selected_keyword' not in st.session_state: st.session_state.selected_keyword = None
 
-    # DB 연결
     sheet = get_db_connection()
     db_dict = {}
     if sheet:
@@ -143,12 +144,12 @@ def main():
             db_dict = {str(row['target_word']): str(row['replace_word']) for row in db_data}
         except: pass
 
-    # --- 레이아웃 ---
-    col_left, col_mid, col_right = st.columns([4, 2, 3])
+    # --- 레이아웃 (비율 조정) ---
+    # 기존 [4, 2, 3] -> [5, 2, 2] 로 변경 (편집기를 줄이고 원고를 넓힘)
+    col_left, col_mid, col_right = st.columns([5, 2, 2])
 
     with col_left:
         st.subheader("📝 원고 입력")
-        
         st.text_area(
             "글을 입력하세요", 
             height=200, 
@@ -171,9 +172,9 @@ def main():
 
         if st.session_state.analyzed and current_text:
             counts, targets = analyze_text_smart(current_text, db_dict.keys())
-            
-            # HTML 생성 및 클릭 감지
             html_content = create_interactive_html(current_text, targets)
+            
+            # 클릭 감지
             clicked_word = click_detector(html_content)
             
             if clicked_word:
@@ -206,7 +207,7 @@ def main():
                 st.write(f"등장 횟수: **{counts.get(target, 0)}회**")
 
                 st.divider()
-                tab_fix, tab_add, tab_manual = st.tabs(["🔄 대체어 적용", "➕ DB 추가", "✍️ 직접 수정"])
+                tab_fix, tab_add, tab_manual = st.tabs(["🔄 대체어", "➕ DB추가", "✍️ 수정"])
                 
                 # 1. DB 대체어 적용
                 with tab_fix:
@@ -215,9 +216,9 @@ def main():
                     
                     if search_key in db_dict:
                         replacements = [w.strip() for w in db_dict[search_key].split(',')]
-                        st.success("등록된 대체어:")
+                        st.success("추천 대체어:")
                         for rep in replacements:
-                            if st.button(f"👉 '{rep}'(으)로 변경", key=f"btn_{target}_{rep}", use_container_width=True):
+                            if st.button(f"👉 '{rep}'", key=f"btn_{target}_{rep}", use_container_width=True):
                                 new_text = current_text.replace(target, rep)
                                 st.session_state.main_text = new_text
                                 st.session_state.selected_keyword = None
@@ -230,7 +231,7 @@ def main():
                 with tab_add:
                     st.write(f"**'{search_key}'** 저장")
                     new_sub = st.text_input("대체어 입력", key=f"new_db_{target}")
-                    if st.button("💾 DB 저장", key=f"save_{target}", use_container_width=True):
+                    if st.button("💾 저장", key=f"save_{target}", use_container_width=True):
                         if new_sub and sheet:
                             try:
                                 sheet.append_row([search_key, new_sub])
@@ -240,8 +241,8 @@ def main():
 
                 # 3. 직접 수정
                 with tab_manual:
-                    manual_val = st.text_input("바꿀 단어 입력", key=f"manual_{target}")
-                    if st.button("적용하기", key=f"apply_{target}", use_container_width=True, type="primary"):
+                    manual_val = st.text_input("바꿀 단어", key=f"manual_{target}")
+                    if st.button("적용", key=f"apply_{target}", use_container_width=True, type="primary"):
                         if manual_val:
                             st.session_state.main_text = current_text.replace(target, manual_val)
                             st.session_state.selected_keyword = None
@@ -251,7 +252,6 @@ def main():
     # [하단] 최종 복사 영역
     st.divider()
     st.subheader("✅ 최종 교정 원고 (자동 저장됨)")
-    st.caption("우측 상단의 복사 버튼을 눌러 사용하세요.")
     st.code(st.session_state.main_text, language=None)
 
 if __name__ == "__main__":

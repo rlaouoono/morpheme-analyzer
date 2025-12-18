@@ -74,12 +74,7 @@ def create_highlighted_html(text, keywords):
     highlighted_text = pattern.sub(replace_func, text)
     return highlighted_text.replace("\n", "<br>")
 
-# --- 5. 콜백 함수 (상태 동기화용) ---
-def sync_input_area():
-    """입력창의 값을 세션 스테이트에 동기화"""
-    st.session_state.main_text = st.session_state.input_area
-
-# --- 6. 메인 앱 ---
+# --- 5. 메인 앱 ---
 def main():
     st.set_page_config(layout="wide", page_title="영웅 분석기")
 
@@ -117,7 +112,7 @@ def main():
 
     st.title("영웅 분석기")
 
-    # 세션 초기화
+    # [중요] 세션 상태 초기화
     if 'main_text' not in st.session_state: st.session_state.main_text = ""
     if 'analyzed' not in st.session_state: st.session_state.analyzed = False
     if 'selected_keyword' not in st.session_state: st.session_state.selected_keyword = None
@@ -131,11 +126,11 @@ def main():
             db_dict = {str(row['target_word']): str(row['replace_word']) for row in db_data}
         except: pass
 
-    # [핵심] URL 파라미터 처리 (새로고침 시 실행됨)
+    # [핵심] URL 파라미터 감지 (클릭 시 실행)
     if "selected_word" in st.query_params:
         st.session_state.selected_keyword = st.query_params["selected_word"]
         st.session_state.analyzed = True
-        st.query_params.clear()
+        st.query_params.clear() # 주소창 정리
 
     # --- 레이아웃 ---
     col_left, col_mid, col_right = st.columns([4, 2, 3])
@@ -143,18 +138,17 @@ def main():
     with col_left:
         st.subheader("📝 원고 입력")
         
-        # [수정] value를 session_state와 완전히 묶어둠
-        text_val = st.text_area(
+        # [수정 포인트] key를 제거하고, 변수로 직접 받음
+        # key가 없으면 Streamlit은 'value' 값을 무조건 신뢰해서 화면에 뿌림 (증발 방지)
+        current_input = st.text_area(
             "글을 입력하세요", 
             value=st.session_state.main_text, 
-            height=150, 
-            key="input_area",
-            on_change=sync_input_area # 입력할 때마다 동기화
+            height=150
         )
         
-        # 분석 버튼 (누를 때 값 강제 저장)
+        # 분석 버튼 누르면 -> 현재 입력된 값을 세션에 '박제'함
         if st.button("🔍 분석 시작", type="primary", use_container_width=True):
-            st.session_state.main_text = text_val # 현재 입력된 값 강제 저장
+            st.session_state.main_text = current_input
             st.session_state.analyzed = True
             st.session_state.selected_keyword = None 
             st.rerun()
@@ -163,7 +157,12 @@ def main():
         st.subheader("📄 교정 미리보기")
         st.caption("노란색 단어를 클릭하면 오른쪽에서 수정할 수 있습니다.")
         
-        if st.session_state.main_text and st.session_state.analyzed:
+        # 분석된 상태라면 세션에 저장된 텍스트로 미리보기 생성
+        if st.session_state.analyzed:
+            # 혹시 모르니 현재 텍스트 업데이트 (방어 코드)
+            if not st.session_state.main_text and current_input:
+                st.session_state.main_text = current_input
+                
             counts, targets = analyze_text_smart(st.session_state.main_text, db_dict.keys())
             final_html = create_highlighted_html(st.session_state.main_text, targets)
             st.markdown(f"<div class='preview-box'>{final_html}</div>", unsafe_allow_html=True)
@@ -171,7 +170,7 @@ def main():
             st.info("분석을 시작하면 미리보기가 표시됩니다.")
 
     # 중간 & 오른쪽 패널
-    if st.session_state.main_text and st.session_state.analyzed:
+    if st.session_state.analyzed and st.session_state.main_text:
         counts, targets = analyze_text_smart(st.session_state.main_text, db_dict.keys())
         sorted_targets = sorted(targets, key=lambda x: counts.get(x, 0), reverse=True)
         

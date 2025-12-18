@@ -76,7 +76,7 @@ def create_highlighted_html(text, keywords):
 
 # --- 5. 메인 앱 ---
 def main():
-    st.set_page_config(layout="wide", page_title="영웅 분석기")
+    st.set_page_config(layout="wide", page_title="영웅 분석기v1.2")
 
     # CSS 스타일
     st.markdown("""
@@ -236,3 +236,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+

@@ -6,37 +6,40 @@ import re
 from st_click_detector import click_detector
 import time
 
-# --- 1. [좀비 스크롤 방지] 더 강력하게 고정 ---
+# --- 1. [스크롤 고정 끝판왕] JS + CSS 강제 ---
 def inject_scroll_keeper():
     js = """
     <script>
+        // 1. 스크롤 동작을 '즉시(instant)'로 변경하여 부드러운 애니메이션 제거 (튀는 원인 차단)
+        document.documentElement.style.scrollBehavior = 'auto';
+        
+        // 2. 부모 윈도우(실제 브라우저) 스크롤 위치 제어
         try {
             var parentWindow = window.parent;
             
-            // 1. 스크롤 할 때마다 위치 저장 (세션 스토리지)
+            // 스크롤 이벤트 발생 시 로컬 스토리지에 저장 (세션보다 강력)
             parentWindow.addEventListener('scroll', function() {
-                parentWindow.sessionStorage.setItem('savedScroll', parentWindow.scrollY);
+                parentWindow.localStorage.setItem('savedScroll', parentWindow.scrollY);
             });
 
-            // 2. 복구 함수
+            // 위치 복원 함수
             function restoreScroll() {
-                var savedPos = parentWindow.sessionStorage.getItem('savedScroll');
+                var savedPos = parentWindow.localStorage.getItem('savedScroll');
                 if (savedPos) {
-                    parentWindow.scrollTo(0, parseInt(savedPos));
+                    parentWindow.scrollTo({
+                        top: parseInt(savedPos),
+                        behavior: 'instant' // 애니메이션 없이 즉시 이동
+                    });
                 }
             }
 
-            // 3. [핵심] 렌더링 타이밍을 맞추기 위해 0.5초 동안 계속 복구 시도
+            // 렌더링 직후 반복 실행하여 위치 강제 고정
             restoreScroll();
             setTimeout(restoreScroll, 50);
             setTimeout(restoreScroll, 100);
-            setTimeout(restoreScroll, 200);
             setTimeout(restoreScroll, 300);
-            setTimeout(restoreScroll, 500);
             
-        } catch(e) {
-            console.log("Scroll script error: ", e);
-        }
+        } catch(e) { console.log(e); }
     </script>
     """
     st.components.v1.html(js, height=0, width=0)
@@ -96,29 +99,44 @@ def replace_nth_occurrence(text, target_word, replace_word, n):
         return text[:start_idx] + replace_word + text[end_idx:]
     return text
 
-# --- 3. HTML 생성 (CSS 수정 가능) ---
+# [NEW] 문장 단위 추출 및 교체 함수
+def get_sentence_context(text, target_word, n):
+    indices = [m.start() for m in re.finditer(re.escape(target_word), text)]
+    if n >= len(indices): return None, None, None
+    
+    start_idx = indices[n]
+    
+    # 문장 시작 찾기 (. ? ! 줄바꿈)
+    sent_start = max(text.rfind('.', 0, start_idx), text.rfind('?', 0, start_idx), text.rfind('!', 0, start_idx), text.rfind('\n', 0, start_idx))
+    if sent_start == -1: sent_start = 0
+    else: sent_start += 1 # 구두점 다음부터
+    
+    # 문장 끝 찾기
+    sent_end = min([i for i in [text.find('.', start_idx), text.find('?', start_idx), text.find('!', start_idx), text.find('\n', start_idx), len(text)] if i != -1])
+    if sent_end != len(text): sent_end += 1 # 구두점 포함
+    
+    original_sentence = text[sent_start:sent_end].strip()
+    return original_sentence, sent_start, sent_end
+
+def replace_sentence_range(text, start, end, new_sentence):
+    return text[:start] + new_sentence + text[end:]
+
+# --- 3. HTML 생성 ---
 def create_interactive_html(text, keywords, filter_word=None):
-    # ▼▼▼ [여기서 노란 박스 크기 조절하세요] ▼▼▼
     css_style = """
     <style>
         .highlight {
-            background-color: #fff5b1; /* 배경색 */
-            padding: 2px 5px;          /* [크기조절] 상하 2px, 좌우 5px */
-            border-radius: 4px;        /* 모서리 둥글게 */
-            font-weight: bold;         /* 글자 굵게 */
-            border: 1px solid #fdd835; /* 테두리 */
-            color: #333;               /* 글자색 */
+            background-color: #fff5b1; 
+            padding: 2px 5px;  /* 노란 박스 크기 조절 */
+            border-radius: 4px;
+            font-weight: bold;
+            border: 1px solid #fdd835; 
+            color: #333; 
             text-decoration: none;
-            margin: 0 2px;             /* 글자 사이 간격 */
+            margin: 0 2px;
             cursor: pointer;
         }
         .highlight:hover { background-color: #ffeb3b; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
-        
-        .dimmed {
-            background-color: transparent;
-            padding: 0; border: none; font-weight: normal;
-            color: inherit; pointer-events: none;
-        }
     </style>
     """
     
@@ -156,10 +174,8 @@ def create_interactive_html(text, keywords, filter_word=None):
 def main():
     st.set_page_config(layout="wide", page_title="영웅 분석기")
     
-    # [핵심] 스크롤 고정 스크립트 실행
-    inject_scroll_keeper()
+    inject_scroll_keeper() # 스크롤 고정 실행
 
-    # CSS (패널 고정 및 스타일)
     st.markdown("""
     <style>
     div[data-testid="stColumn"]:nth-of-type(2) > div,
@@ -174,13 +190,11 @@ def main():
 
     st.title("영웅 분석기")
 
-    # 세션 상태 초기화
     if 'main_text' not in st.session_state: st.session_state['main_text'] = ""
     if 'analyzed' not in st.session_state: st.session_state.analyzed = False
     if 'selected_keyword_id' not in st.session_state: st.session_state.selected_keyword_id = None
     if 'filter_keyword' not in st.session_state: st.session_state.filter_keyword = None
 
-    # DB 로드
     sheet = get_db_connection()
     db_dict = {}
     if sheet:
@@ -193,7 +207,7 @@ def main():
 
     col_left, col_mid, col_right = st.columns([5, 2, 2])
 
-    # --- 1. 왼쪽: 원고 입력 & 미리보기 ---
+    # --- 왼쪽: 원고 입력 & 미리보기 ---
     with col_left:
         with st.expander("📝 원고 입력 / 수정 (펼치기)", expanded=not st.session_state.analyzed):
             st.text_area("글을 입력하세요", key="editor_key", height=150,
@@ -207,7 +221,6 @@ def main():
 
         st.divider()
         
-        # [복사 버튼]
         c1, c2 = st.columns([3, 1])
         with c1: st.subheader("📄 교정 미리보기")
         with c2:
@@ -235,19 +248,15 @@ def main():
         else:
             st.info("원고를 입력하고 분석을 시작하세요.")
 
-    # --- 2. 가운데: 반복 횟수 (오류 수정됨) ---
+    # --- 가운데: 반복 횟수 ---
     with col_mid:
         st.subheader("📊 반복 횟수")
         if st.session_state.analyzed and (sorted_targets := sorted(targets, key=lambda x: counts.get(x, 0), reverse=True)):
             df = pd.DataFrame([(k, counts[k]) for k in sorted_targets], columns=['키워드', '횟수'])
             
             event = st.dataframe(
-                df, 
-                hide_index=True, 
-                use_container_width=True, 
-                height=500,
-                on_select="rerun", 
-                selection_mode="single-row"
+                df, hide_index=True, use_container_width=True, height=500,
+                on_select="rerun", selection_mode="single-row"
             )
             
             if event.selection.rows:
@@ -263,7 +272,7 @@ def main():
         else:
             st.caption("결과 없음")
 
-    # --- 3. 오른쪽: 편집기 ---
+    # --- 오른쪽: 편집기 (문맥 교정 기능 추가) ---
     with col_right:
         st.subheader("편집기")
         sel_id = st.session_state.selected_keyword_id
@@ -277,13 +286,16 @@ def main():
 
             st.markdown(f"**'{target_word}'** ({target_idx + 1}번째 등장)")
             
-            tab_fix, tab_add, tab_manual = st.tabs(["🔄대체", "➕DB", "✍️수정"])
+            # [NEW] 탭 순서 변경 및 '문맥' 탭 추가
+            tab_fix, tab_context, tab_add = st.tabs(["🔄대체", "📝문맥", "➕DB"])
             
-            with tab_fix: # 대체어
+            # 1. 단순 대체
+            with tab_fix: 
                 norm = normalize_word(target_word)
                 key = norm if norm and norm in db_dict else target_word
                 if key in db_dict:
                     reps = [w.strip() for w in db_dict[key].split(',') if w.strip()]
+                    st.caption("클릭 시 해당 단어만 변경됩니다.")
                     for rep in reps:
                         if st.button(f"👉 {rep}", key=f"btn_{sel_id}_{rep}", use_container_width=True):
                             new_text = replace_nth_occurrence(current_text, target_word, rep, target_idx)
@@ -293,7 +305,29 @@ def main():
                             st.rerun()
                 else: st.warning("대체어 없음")
 
-            with tab_add: # DB추가
+            # 2. [NEW] 문맥(문장) 교정 - 조사 수정용
+            with tab_context:
+                st.caption("단어가 포함된 문장 전체를 수정합니다. 조사가 어색할 때 사용하세요.")
+                
+                # 문장 추출
+                orig_sent, s_start, s_end = get_sentence_context(current_text, target_word, target_idx)
+                
+                if orig_sent:
+                    # 문장 수정용 텍스트 에어리어
+                    edited_sent = st.text_area("문장 수정", value=orig_sent, height=100, key=f"ctx_{sel_id}")
+                    
+                    if st.button("문장 적용", key=f"apply_ctx_{sel_id}", type="primary", use_container_width=True):
+                        # 전체 텍스트에서 해당 문장 구간 교체
+                        new_text = replace_sentence_range(current_text, s_start, s_end, edited_sent)
+                        st.session_state.main_text = new_text
+                        st.session_state.selected_keyword_id = None
+                        st.toast("문맥이 수정되었습니다.")
+                        st.rerun()
+                else:
+                    st.error("문장을 찾을 수 없습니다.")
+
+            # 3. DB 추가
+            with tab_add:
                 new_sub = st.text_input("추가할 단어", key=f"new_db_{sel_id}")
                 msg_box = st.empty()
                 if st.button("💾 저장", key=f"save_{sel_id}", use_container_width=True):
@@ -304,15 +338,6 @@ def main():
                             time.sleep(1)
                             st.rerun()
                         except: msg_box.error("실패")
-
-            with tab_manual: # 직접 수정
-                val = st.text_input("입력", key=f"man_{sel_id}")
-                if st.button("적용", key=f"app_{sel_id}", use_container_width=True, type="primary"):
-                    if val:
-                        new_text = replace_nth_occurrence(current_text, target_word, val, target_idx)
-                        st.session_state.main_text = new_text
-                        st.session_state.selected_keyword_id = None
-                        st.rerun()
 
 if __name__ == "__main__":
     main()

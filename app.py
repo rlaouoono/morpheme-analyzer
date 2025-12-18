@@ -41,19 +41,16 @@ def analyze_text_smart(text, db_keys):
     tokens = text.split()
     counts = {}
     
-    # 1. 단어 카운팅
     for t in tokens:
         norm = normalize_word(t)
         if norm:
             counts[norm] = counts.get(norm, 0) + 1
             
-    # 2. 본문 실제 등장 횟수 재확인
     final_counts = {}
     for kw in counts.keys():
         cnt = text.count(kw)
         final_counts[kw] = cnt
         
-    # 빈도수 2회 이상 or DB 포함 단어 추출
     target_keywords = []
     for kw, cnt in final_counts.items():
         if cnt >= 2 or kw in db_keys:
@@ -72,18 +69,17 @@ def create_highlighted_html(text, keywords):
 
     def replace_func(match):
         word = match.group(0)
-        # 클릭 시 URL 파라미터로 단어 전달
         return f"<a href='?selected_word={word}' target='_self' class='highlight'>{word}</a>"
 
     highlighted_text = pattern.sub(replace_func, text)
     return highlighted_text.replace("\n", "<br>")
 
-# --- [핵심] 텍스트 입력 안전장치 (Callback) ---
-def update_text_area():
-    """사용자가 입력을 마쳤을 때만 세션 상태를 업데이트"""
+# --- 5. 콜백 함수 (상태 동기화용) ---
+def sync_input_area():
+    """입력창의 값을 세션 스테이트에 동기화"""
     st.session_state.main_text = st.session_state.input_area
 
-# --- 5. 메인 앱 ---
+# --- 6. 메인 앱 ---
 def main():
     st.set_page_config(layout="wide", page_title="영웅 분석기")
 
@@ -92,7 +88,6 @@ def main():
     <style>
     .stTextArea textarea { font-size: 16px; line-height: 1.6; }
     
-    /* 하이라이트 링크 스타일 */
     a.highlight { 
         background-color: #fff5b1; 
         color: #333 !important;
@@ -122,12 +117,12 @@ def main():
 
     st.title("영웅 분석기")
 
-    # 세션 상태 초기화
+    # 세션 초기화
     if 'main_text' not in st.session_state: st.session_state.main_text = ""
     if 'analyzed' not in st.session_state: st.session_state.analyzed = False
     if 'selected_keyword' not in st.session_state: st.session_state.selected_keyword = None
 
-    # DB 로드
+    # DB 연결
     sheet = get_db_connection()
     db_dict = {}
     if sheet:
@@ -136,31 +131,30 @@ def main():
             db_dict = {str(row['target_word']): str(row['replace_word']) for row in db_data}
         except: pass
 
-    # [핵심] URL 클릭 감지 로직
-    # 링크 클릭 -> 앱 새로고침 -> 여기서 파라미터 확인 -> 세션에 저장 -> 파라미터 삭제
+    # [핵심] URL 파라미터 처리 (새로고침 시 실행됨)
     if "selected_word" in st.query_params:
-        clicked_word = st.query_params["selected_word"]
-        st.session_state.selected_keyword = clicked_word
-        st.session_state.analyzed = True # 분석 상태 유지
-        st.query_params.clear() # 주소창 깨끗하게 정리
+        st.session_state.selected_keyword = st.query_params["selected_word"]
+        st.session_state.analyzed = True
+        st.query_params.clear()
 
     # --- 레이아웃 ---
     col_left, col_mid, col_right = st.columns([4, 2, 3])
 
-    # [왼쪽] 원고 입력 및 미리보기
     with col_left:
         st.subheader("📝 원고 입력")
         
-        # [수정됨] 입력창이 새로고침돼도 값을 유지하도록 on_change 사용
-        st.text_area(
+        # [수정] value를 session_state와 완전히 묶어둠
+        text_val = st.text_area(
             "글을 입력하세요", 
             value=st.session_state.main_text, 
             height=150, 
             key="input_area",
-            on_change=update_text_area # 입력할 때만 저장 (클릭 시 증발 방지)
+            on_change=sync_input_area # 입력할 때마다 동기화
         )
         
+        # 분석 버튼 (누를 때 값 강제 저장)
         if st.button("🔍 분석 시작", type="primary", use_container_width=True):
+            st.session_state.main_text = text_val # 현재 입력된 값 강제 저장
             st.session_state.analyzed = True
             st.session_state.selected_keyword = None 
             st.rerun()
@@ -176,12 +170,11 @@ def main():
         else:
             st.info("분석을 시작하면 미리보기가 표시됩니다.")
 
-    # [중간 & 오른쪽]
+    # 중간 & 오른쪽 패널
     if st.session_state.main_text and st.session_state.analyzed:
         counts, targets = analyze_text_smart(st.session_state.main_text, db_dict.keys())
         sorted_targets = sorted(targets, key=lambda x: counts.get(x, 0), reverse=True)
         
-        # [중간] 통계
         with col_mid:
             st.subheader("📊 반복 횟수")
             if sorted_targets:
@@ -190,7 +183,6 @@ def main():
             else:
                 st.caption("감지된 키워드가 없습니다.")
 
-        # [오른쪽] 편집기
         with col_right:
             st.subheader("편집기")
             target = st.session_state.selected_keyword
@@ -205,7 +197,6 @@ def main():
                 st.divider()
                 tab_fix, tab_add, tab_manual = st.tabs(["🔄 대체어 적용", "➕ DB 추가", "✍️ 직접 수정"])
                 
-                # 1. DB 대체어 적용
                 with tab_fix:
                     norm_target = normalize_word(target)
                     search_key = norm_target if norm_target and norm_target in db_dict else target
@@ -221,7 +212,6 @@ def main():
                     else:
                         st.warning("등록된 대체어가 없습니다.")
 
-                # 2. DB 추가
                 with tab_add:
                     st.write(f"**'{search_key}'** 저장")
                     new_sub = st.text_input("대체어 입력 (콤마 구분)", key=f"new_db_{target}")
@@ -233,7 +223,6 @@ def main():
                                 st.rerun()
                             except: st.error("저장 실패")
 
-                # 3. 직접 수정
                 with tab_manual:
                     manual_val = st.text_input("바꿀 단어 입력", key=f"manual_{target}")
                     if st.button("적용하기", key=f"apply_{target}", use_container_width=True, type="primary"):
